@@ -1,0 +1,76 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Trading Platform Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e17;--bg2:#111827;--card:#1a2235;--border:#2a3548;--txt:#e2e8f0;--txt2:#94a3b8;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--yellow:#eab308}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
+.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px}
+.header h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--red);transition:background .3s}
+.header h1 .dot.active{background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.header-controls{display:flex;gap:10px;align-items:center}
+.header-controls select,.header-controls button{background:var(--card);color:var(--txt);border:1px solid var(--border);padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;transition:all .2s}
+.header-controls button:hover{border-color:var(--blue)}
+.btn-start{background:var(--green)!important;color:#000!important;font-weight:600;border-color:var(--green)!important}
+.btn-stop{background:var(--red)!important;color:#fff!important;font-weight:600;border-color:var(--red)!important}
+.dashboard{padding:20px 24px;display:grid;gap:16px}
+.metrics-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 20px}
+.card-title{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--txt2);margin-bottom:8px}
+.card-value{font-size:24px;font-weight:700}
+.card-sub{font-size:12px;color:var(--txt2);margin-top:4px}
+.positive{color:var(--green)}.negative{color:var(--red)}
+.main-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.main-grid{grid-template-columns:1fr}}
+.chart-container{position:relative;height:300px}
+.chart-container canvas{width:100%!important;height:100%!important}
+.trade-log{max-height:300px;overflow-y:auto}
+.trade-log table{width:100%;border-collapse:collapse;font-size:13px}
+.trade-log th{position:sticky;top:0;background:var(--card);text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);color:var(--txt2);font-weight:600}
+.trade-log td{padding:8px 12px;border-bottom:1px solid var(--border)}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.tag-buy{background:rgba(34,197,94,.15);color:var(--green)}
+.tag-sell{background:rgba(239,68,68,.15);color:var(--red)}
+.signal-bar{display:flex;gap:12px;align-items:center;margin-bottom:16px}
+.signal-indicator{display:flex;align-items:center;gap:8px;padding:10px 20px;border-radius:8px;font-weight:700;font-size:16px;background:rgba(148,163,184,.1);color:var(--txt2);border:1px solid var(--border);transition:all .3s}
+.signal-indicator.buy{background:rgba(34,197,94,.1);color:var(--green);border-color:rgba(34,197,94,.3)}
+.signal-indicator.sell{background:rgba(239,68,68,.1);color:var(--red);border-color:rgba(239,68,68,.3)}
+.signal-indicator.block{background:rgba(234,179,8,.1);color:var(--yellow);border-color:rgba(234,179,8,.3)}
+.backtest-panel{grid-column:1/-1}
+.backtest-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px}
+.mini-stat{text-align:center;padding:14px;background:var(--bg2);border-radius:8px}
+.mini-stat .label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px}
+.mini-stat .val{font-size:20px;font-weight:700;margin-top:4px}
+.log-area{grid-column:1/-1;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;max-height:200px;overflow-y:auto;font-family:'Courier New',monospace;font-size:12px;line-height:1.6;color:var(--txt2)}
+.log-time{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="header"><h1><span class="dot" id="statusDot"></span>Trading Platform</h1>
+<div class="header-controls"><select id="strategySelect"><option value="momentum">Momentum</option><option value="breakout">Breakout</option></select><select id="modeSelect"><option value="PAPER">Paper</option><option value="LIVE">Live (Testnet)</option></select><button class="btn-start" onclick="startEngine()">Start</button><button class="btn-stop" onclick="stopEngine()">Stop</button><button onclick="runBacktest()">Backtest</button><button onclick="resetEngine()">Reset</button></div></div>
+<div class="dashboard">
+<div class="metrics-row"><div class="card"><div class="card-title">Current Price</div><div class="card-value" id="priceDisplay">--</div><div class="card-sub" id="tickCounter">Ticks: 0</div></div><div class="card"><div class="card-title">Total PnL</div><div class="card-value" id="pnlDisplay">--</div><div class="card-sub" id="returnDisplay">Return: --</div></div><div class="card"><div class="card-title">Equity</div><div class="card-value" id="equityDisplay">--</div><div class="card-sub" id="cashDisplay">Cash: --</div></div><div class="card"><div class="card-title">Position</div><div class="card-value" id="positionDisplay">0</div><div class="card-sub" id="entryDisplay">Entry: --</div></div><div class="card"><div class="card-title">Drawdown</div><div class="card-value" id="drawdownDisplay">0%</div><div class="card-sub" id="winRateDisplay">Win Rate: --</div></div></div>
+<div class="signal-bar"><div class="signal-indicator" id="signalIndicator">HOLD</div><div class="signal-indicator" id="riskIndicator" style="font-size:13px">Risk: OK</div></div>
+<div class="main-grid"><div class="card"><div class="card-title">Equity Curve</div><div class="chart-container"><canvas id="equityChart"></canvas></div></div><div class="card"><div class="card-title">Trade Log</div><div class="trade-log" id="tradeLog"><table><thead><tr><th>#</th><th>Side</th><th>Price</th><th>Commission</th><th>Equity</th></tr></thead><tbody id="tradeTableBody"></tbody></table></div></div></div>
+<div class="card backtest-panel" id="backtestPanel" style="display:none"><div class="card-title">Backtest Results</div><div class="backtest-results" id="backtestResults"></div></div>
+<div class="log-area" id="logArea"><div><span class="log-time">[ready]</span> Dashboard loaded.</div></div></div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+let ws=null,eqData=[],eqLabels=[],chart;
+function initChart(){chart=new Chart(document.getElementById('equityChart').getContext('2d'),{type:'line',data:{labels:eqLabels,datasets:[{label:'Equity',data:eqData,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.1)',borderWidth:2,fill:true,tension:.3,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#64748b',maxTicksLimit:10},grid:{color:'rgba(255,255,255,0.03)'}},y:{ticks:{color:'#64748b'},grid:{color:'rgba(255,255,255,0.05)'}}}}})}
+initChart();
+function connectWS(){const p=location.protocol==='https:'?'wss:':'ws:';ws=new WebSocket(p+'//'+location.host+'/ws');ws.onopen=()=>log('WS connected');ws.onclose=()=>{log('WS disconnected - reconnecting...');setTimeout(connectWS,3000)};ws.onmessage=e=>{handleTick(JSON.parse(e.data))}}
+connectWS();
+function handleTick(d){const{price,signal,safe_signal,executed,portfolio,tick}=d;document.getElementById('priceDisplay').textContent=price?'$'+price.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';document.getElementById('tickCounter').textContent='Ticks: '+tick;if(portfolio){const p=portfolio.total_pnl,el=document.getElementById('pnlDisplay');el.textContent='$'+p.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});el.className='card-value '+(p>=0?'positive':'negative');document.getElementById('equityDisplay').textContent='$'+portfolio.equity.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});document.getElementById('cashDisplay').textContent='Cash: $'+portfolio.cash.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2});document.getElementById('positionDisplay').textContent=portfolio.position;document.getElementById('entryDisplay').textContent=portfolio.entry_price?'Entry: $'+portfolio.entry_price:'Entry: --';document.getElementById('winRateDisplay').textContent='Win Rate: '+(portfolio.win_rate*100).toFixed(1)+'% | Trades: '+portfolio.total_trades;eqData.push(portfolio.equity);eqLabels.push(tick);if(eqData.length>500){eqData.shift();eqLabels.shift()}chart.update()}const s=document.getElementById('signalIndicator');s.textContent=safe_signal||signal||'HOLD';s.className='signal-indicator '+(safe_signal||signal||'hold').toLowerCase();if(safe_signal==='BLOCK')s.className='signal-indicator block';if(executed){log('Trade: '+safe_signal+' @ $'+price);refreshTrades()}}
+async function startEngine(){const s=document.getElementById('strategySelect').value,m=document.getElementById('modeSelect').value;document.getElementById('statusDot').classList.add('active');log('Starting: '+s+' '+m);if(ws&&ws.readyState===1)ws.send(JSON.stringify({action:'start',strategy:s,mode:m}));await fetch('/api/start?strategy='+s+'&mode='+m,{method:'POST'})}
+async function stopEngine(){document.getElementById('statusDot').classList.remove('active');log('Stopping...');if(ws&&ws.readyState===1)ws.send(JSON.stringify({action:'stop'}));await fetch('/api/stop',{method:'POST'})}
+async function resetEngine(){document.getElementById('statusDot').classList.remove('active');eqData.length=0;eqLabels.length=0;chart.update();document.getElementById('tradeTableBody').innerHTML='';await fetch('/api/reset',{method:'POST'});log('Reset')}
+async function runBacktest(){const s=document.getElementById('strategySelect').value;log('Backtest: '+s);try{const r=await fetch('/api/backtest?strategy='+s+'&bars=500');const d=await r.json();if(d.success){displayBT(d.data);log('Backtest done')}else log('Error: '+d.error)}catch(e){log('Error: '+e.message)}}
+async function refreshTrades(){try{const r=await fetch('/api/trades');const d=await r.json();const tb=document.getElementById('tradeTableBody');tb.innerHTML='';(d.trades||[]).reverse().slice(0,50).forEach(t=>{const tr=document.createElement('tr'),sc=t.side==='BUY'?'tag-buy':t.side==='SELL'?'tag-sell':'';tr.innerHTML='<td>'+t.trade_id+'</td><td><span class="tag '+sc+'">'+t.side+'</span></td><td>$'+t.price.toFixed(2)+'</td><td>$'+t.commission.toFixed(4)+'</td><td>$'+t.equity_after.toFixed(2)+'</td>';tb.appendChild(tr)})}catch(e){}}
+function displayBT(d){document.getElementById('backtestPanel').style.display='block';const m=d.metrics,b=d.broker;document.getElementById('backtestResults').innerHTML='<div class="mini-stat"><div class="label">Total Return</div><div class="val '+(m.total_return_pct>=0?'positive':'negative')+'">'+m.total_return_pct+'%</div></div><div class="mini-stat"><div class="label">Max Drawdown</div><div class="val negative">'+m.max_drawdown_pct+'%</div></div><div class="mini-stat"><div class="label">Sharpe Ratio</div><div class="val">'+(m.sharpe_ratio!=null?m.sharpe_ratio.toFixed(2):'N/A')+'</div></div><div class="mini-stat"><div class="label">Sortino Ratio</div><div class="val">'+(m.sortino_ratio!=null?m.sortino_ratio.toFixed(2):'N/A')+'</div></div><div class="mini-stat"><div class="label">Total Trades</div><div class="val">'+m.total_trades+'</div></div><div class="mini-stat"><div class="label">Win Rate</div><div class="val">'+(m.win_rate!=null?(m.win_rate*100).toFixed(1)+'%':'N/A')+'</div></div><div class="mini-stat"><div class="label">Profit Factor</div><div class="val">'+(m.profit_factor!=null?m.profit_factor.toFixed(2):'N/A')+'</div></div><div class="mini-stat"><div class="label">Final Equity</div><div class="val">$'+b.equity.toLocaleString()+'</div></div>'}
+function log(msg){const a=document.getElementById('logArea'),t=new Date().toLocaleTimeString(),e=document.createElement('div');e.innerHTML='<span class="log-time">['+t+']</span> '+msg;a.appendChild(e);a.scrollTop=a.scrollHeight}
+</script>
+</body></html>
