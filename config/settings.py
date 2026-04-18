@@ -1,4 +1,5 @@
-﻿from dataclasses import dataclass, field
+"""Configuration settings for the Trading Platform."""
+from dataclasses import dataclass, field
 from typing import Optional
 
 @dataclass
@@ -40,6 +41,14 @@ class BacktestConfig:
     bar_interval: str = "1m"
 
 @dataclass
+class AllocatorConfig:
+    max_ratio: float = 2.0
+    min_mm_inventory: float = 1000.0
+    correlation_window: int = 100
+    max_hedge_pct: float = 0.5
+    exposure_check_interval: int = 1
+
+@dataclass
 class DashboardConfig:
     host: str = "0.0.0.0"
     port: int = 8000
@@ -52,6 +61,7 @@ class Settings:
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
+    allocator: AllocatorConfig = field(default_factory=AllocatorConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     mode: str = "PAPER"
 
