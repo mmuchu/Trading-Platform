@@ -49,6 +49,17 @@ class AllocatorConfig:
     exposure_check_interval: int = 1
 
 @dataclass
+class OrderRouterConfig:
+    """Smart Order Router configuration."""
+    default_algorithm: str = "slice"
+    max_child_orders: int = 10
+    twap_duration_secs: float = 300.0
+    twap_interval_secs: float = 30.0
+    vwap_duration_secs: float = 600.0
+    participation_rate_max: float = 0.1
+    cancel_on_drawdown_pct: float = 0.5
+
+@dataclass
 class DashboardConfig:
     host: str = "0.0.0.0"
     port: int = 8000
@@ -62,6 +73,7 @@ class Settings:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     allocator: AllocatorConfig = field(default_factory=AllocatorConfig)
+    order_router: OrderRouterConfig = field(default_factory=OrderRouterConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     mode: str = "PAPER"
 
