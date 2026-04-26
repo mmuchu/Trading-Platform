@@ -16,19 +16,20 @@ class BaseStrategy(ABC):
 
 class MomentumV3(BaseStrategy):
     name = "MomentumV3"
-    def __init__(self, lookback=20, buy_threshold_pct=0.001, sell_threshold_pct=-0.001):
+    def __init__(self, lookback=40, buy_threshold_pct=0.002, sell_threshold_pct=-0.002):
         self.lookback, self.buy_threshold_pct, self.sell_threshold_pct = lookback, buy_threshold_pct, sell_threshold_pct
     def evaluate(self, tick, history):
         if len(history) < self.lookback: return None
         prices = np.array([t.price for t in history], dtype=np.float64)
         pct = (prices[-1] - prices[-self.lookback]) / prices[-self.lookback]
+        print(f"[STRAT] pct={pct:.6f}")
         side = Side.BUY if pct > self.buy_threshold_pct else (Side.SELL if pct < self.sell_threshold_pct else None)
         if side is None: return None
         return SignalEvent(symbol=tick.symbol, side=side, price=tick.price, strength=round(min(abs(pct)/0.005, 1.0), 4), source=SignalSource.RULE_ENGINE, metadata={"strategy": self.name, "pct_change": round(pct, 6)})
 
 class MeanReversionV3(BaseStrategy):
     name = "MeanReversionV3"
-    def __init__(self, lookback=50, entry_z=2.0):
+    def __init__(self, lookback=40, entry_z=1.5):
         self.lookback, self.entry_z = lookback, entry_z
     def evaluate(self, tick, history):
         if len(history) < self.lookback: return None
@@ -36,16 +37,17 @@ class MeanReversionV3(BaseStrategy):
         mean, std = np.mean(prices), np.std(prices)
         if std == 0: return None
         z = (tick.price - mean) / std
+        print(f"[STRAT] z={z:.4f}")
         side = Side.BUY if z < -self.entry_z else (Side.SELL if z > self.entry_z else None)
         if side is None: return None
         return SignalEvent(symbol=tick.symbol, side=side, price=tick.price, strength=round(min(abs(z)/(self.entry_z*2), 1.0), 4), source=SignalSource.RULE_ENGINE, metadata={"strategy": self.name, "z_score": round(z, 4)})
 
 class V3StrategyService:
-    def __init__(self, bus: EventBus, cooldown: float = 1.0):
+    def __init__(self, bus: EventBus, cooldown: float = 60.0):
         self.bus, self.cooldown = bus, cooldown
         self.strategies = [MomentumV3(), MeanReversionV3()]
         self._history: Dict[str, Deque[TickEvent]] = {}
-        self._last_signal_time = 0.0
+        self._last_signal_time: Dict[tuple, float] = {}
         self._signals_emitted = 0
         self._tick_count = 0
     @property
@@ -58,12 +60,15 @@ class V3StrategyService:
         history = self._history.setdefault(event.symbol, deque(maxlen=500))
         history.append(event)
         now = time.time()
-        if now - self._last_signal_time < self.cooldown: return
+        # cooldown now per-signal
         for strategy in self.strategies:
             signal = strategy.evaluate(event, history)
             if signal is not None:
+                if signal.strength<0.15:continue
+                key=(event.symbol,signal.side.value)
+                if now-self._last_signal_time.get(key,0)<self.cooldown:continue
+                self._last_signal_time[key]=now
                 await self.bus.publish(signal)
-                self._last_signal_time = now
                 self._signals_emitted += 1
                 logger.info("Signal: %s %s @ %.2f str=%.2f [%s]", signal.side.value, signal.symbol, signal.price, signal.strength, strategy.name)
                 return

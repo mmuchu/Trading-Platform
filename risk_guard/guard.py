@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.v3.event_bus import EventBus
@@ -78,7 +78,7 @@ class PortfolioRiskGuard:
         self,
         bus: EventBus,
         execution_service: Any,
-        stale_threshold_sec: float = 5.0,
+        stale_threshold_sec: float = 15.0,
         cooldown_config: Optional[CooldownConfig] = None,
     ) -> None:
         self.bus = bus
@@ -101,6 +101,7 @@ class PortfolioRiskGuard:
         self._total_approved: int = 0
         self._total_rejected: int = 0
         self._gate_rejections: Dict[str, int] = {}
+        self._last_result: Optional[GateResult] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -181,6 +182,7 @@ class PortfolioRiskGuard:
             self.cooldown.record_trade(signal.symbol, signal.side.value)
 
         result.evaluation_time_ms = (time.time() - t0) * 1000
+        self._last_result = result
         return result
 
     # ------------------------------------------------------------------
@@ -376,6 +378,8 @@ class PortfolioRiskGuard:
             "cooldown": self.cooldown.stats,
             "stats": {
                 "total_evaluations": self._total_evaluations,
+                "total_approved": self._total_approved,
+                "total_rejected": self._total_rejected,
                 "approval_rate": (
                     round(
                         self._total_approved / self._total_evaluations * 100, 1
@@ -385,6 +389,9 @@ class PortfolioRiskGuard:
                 ),
                 "gate_rejections": dict(self._gate_rejections),
             },
+            "last_evaluation": (
+                asdict(self._last_result) if self._last_result else None
+            ),
         }
 
     def reset(self) -> None:

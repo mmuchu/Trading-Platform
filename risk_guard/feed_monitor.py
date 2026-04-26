@@ -54,8 +54,8 @@ class FeedMonitor:
     def __init__(
         self,
         bus: EventBus,
-        stale_threshold_sec: float = 5.0,
-        gap_threshold_sec: float = 3.0,
+        stale_threshold_sec: float = 15.0,
+        gap_threshold_sec: float = 10.0,
     ) -> None:
         self.bus = bus
         self.stale_threshold_sec = stale_threshold_sec

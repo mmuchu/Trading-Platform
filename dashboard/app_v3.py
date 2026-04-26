@@ -11,6 +11,16 @@ import asyncio
 import logging
 import time
 
+import json
+_o=json.JSONEncoder.default
+def _sd(s,o):
+ if isinstance(o,float)and(o!=o or abs(o)>1e308):return None
+ return _o(s,o)
+json.JSONEncoder.default=_sd
+
+import math
+_je=json.JSONEncoder.default
+json.JSONEncoder.default=lambda s,o:None if isinstance(o,float)and(math.isnan(o)or math.isinf(o))else _je(s,o)
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,7 +86,7 @@ def create_v3_app(orchestrator=None) -> FastAPI:
             return []
         return _orchestrator.risk_guard.sl_tp.get_triggers(limit)
 
-    @app.websocket("/ws/v3")
+    @app.websocket("/ws")
     async def ws_v3(websocket: WebSocket):
         await websocket.accept()
         logger.info("V3 WebSocket client connected")
@@ -87,9 +97,9 @@ def create_v3_app(orchestrator=None) -> FastAPI:
             while True:
                 if queue:
                     try:
-                        data = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        data = await asyncio.to_thread(queue.get, timeout=1.0)
                         await websocket.send_json(data)
-                    except asyncio.TimeoutError:
+                    except Exception:
                         await websocket.send_json({"type": "HEARTBEAT", "ts": time.time()})
                 else:
                     await asyncio.sleep(1)
@@ -106,7 +116,8 @@ HTML_RESPONSE = HTMLResponse(content="""
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta charset="UTF-8"><meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Trading Platform v3.1 — Risk Guard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -192,38 +203,213 @@ tr:hover{background:rgba(59,130,246,.05)}
 <div class="card"><div class="ch">Max Drawdown</div><div class="cv r" id="dd">0.00%</div></div>
 <div class="card"><div class="ch">Approved</div><div class="cv g" id="ap">0</div></div>
 <div class="card"><div class="ch">Rejected</div><div class="cv r" id="rj">0</div></div>
-<div class="card"><div class="ch">SL Triggers</div><div class="cv o" id="slt">0</div></div>
+<div class="card"><div class="ch">SL/TP Fires</div><div class="cv o" id="slt">0</div></div>
 </div></div>
 
 <script>
-const $=id=>document.getElementById(id);const ws=new WebSocket('ws://'+location.host+'/ws/v3');
-const ML=80,IE=10000;let trades=[];
-function fmt(n,p='$'){const s=n>=0?'':'-';return s+p+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-function ts(t){const d=new Date(t*1000);return d.toLocaleTimeString('en-US',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0')}
-ws.onopen=()=>{$('dot').className='dot d-on';$('badge').textContent='LIVE';$('badge').className='badge b-on'}
-ws.onclose=()=>{$('dot').className='dot d-off';$('badge').textContent='DISCONNECTED';$('badge').className='badge b-off'}
-ws.onmessage=e=>{try{const d=JSON.parse(e.data);
-if(d.type==='PNL_SNAPSHOT'){$('eq').textContent=fmt(d.equity);$('eq').className='cv '+(d.equity>=IE?'g':'r');$('unpnl').textContent=fmt(d.unrealized_pnl);$('unpnl').className='cv '+(d.unrealized_pnl>=0?'g':'r');$('repnl').textContent='Realized: '+fmt(d.realized_pnl);const r=((d.equity-IE)/IE*100).toFixed(2);$('ret').textContent='Return: '+(r>=0?'+':'')+r+'%';$('pos').textContent=d.position;$('pos').className='cv '+(d.position>0?'g':d.position<0?'r':'y');$('avgE').textContent='Avg Entry: '+fmt(d.avg_entry);alog('lf','SNAPSHOT eq='+d.equity+' pos='+d.position)}
-if(d.type==='TICK'){$('px').textContent=fmt(d.price);alog('lk','TICK '+d.symbol+' @ '+d.price)}
-if(d.type==='FILL'){trades.unshift(d);if(trades.length>20)trades.pop();rtl();alog('lf','FILL '+d.side+' '+d.symbol+' x'+d.quantity+' @ '+d.price)}
-if(d.type==='SIGNAL'){alog('ls','SIGNAL '+d.side+' '+d.symbol+' @ '+d.price+' str='+d.strength.toFixed(2)+(d.metadata&&d.metadata.trigger_type?' ['+d.metadata.trigger_type+']':''))}
-if(d.type==='RISK_REJECTED'){alog('lr','REJECTED '+d.reason)}
-if(d.type==='HEARTBEAT')rs()}
-}catch(ex){console.error(ex)}};
-function rtl(){$('tl').innerHTML=trades.map(t=>'<tr><td>'+ts(t.timestamp)+'</td><td class="s'+t.side[0].toLowerCase()+'">'+t.side+'</td><td>'+t.quantity+'</td><td>'+fmt(t.price)+'</td><td>'+fmt(t.commission)+'</td></tr>').join('')}
-function alog(c,m){const e=$('el'),d=document.createElement('div');d.className='le';d.innerHTML='<span class="lt">'+ts(Date.now()/1000)+'</span> <span class="'+c+'">'+m+'</span>';e.prepend(d);while(e.children.length>ML)e.removeChild(e.lastChild)}
-async function rs(){try{const r=await fetch('/api/v3/status');const s=await r.json();if(s.market_data){$('cnt').textContent='Ticks: '+s.market_data.tick_count+' | Signals: '+(s.strategy?.signal_count||0);$('tt').textContent=s.execution?.orders_submitted||0;$('dd').textContent=(s.analytics?.max_drawdown_pct||0).toFixed(2)+'%';$('ap').textContent=s.execution?.orders_submitted||0;$('rj').textContent=s.execution?.orders_rejected||0;
-const wr=s.analytics?.win_rate;if(wr!==undefined){$('wr').textContent=(wr*100).toFixed(1)+'%';$('wr').className='cv '+(wr>=0.5?'g':wr>0?'y':'r');$('rts').textContent='W: '+(s.analytics?.wins||0)+' | L: '+(s.analytics?.losses||0)+' | Trips: '+(s.analytics?.round_trips||0)}
-const rg=s.risk_guard;if(rg){const g=rg.gates_active;const f=rg.feed_alive;
- $('feedSt').innerHTML=f.alive?'<span class="g">Alive</span>':'<span class="r">DEAD</span> '+f.stale_seconds.toFixed(1)+'s';
- $('ddSt').textContent=(rg.risk?.drawdown_pct*100||0).toFixed(2)+'%';
- $('cbSt').innerHTML=rg.risk?.circuit_breaker?'<span class="r">ACTIVE</span>':'<span class="g">OK</span>';
- $('ksSt').innerHTML=rg.risk?.kill_switch?'<span class="r">KILL</span>':'<span class="g">OK</span>';
- $('sltSt').textContent=(rg.sl_tp?.sl_triggers||0)+' / '+(rg.sl_tp?.tp_triggers||0);
-const rs2=rg.risk?.risk_score||0;$('riskScore').textContent=(rs2*100).toFixed(0)+'%';$('riskScore').className='cv '+(rs2<0.5?'g':rs2<0.8?'y':'r');
-const fill=$('riskFill');fill.style.width=(rs2*100)+'%';fill.style.background=rs2<0.5?'var(--g)':rs2<0.8?'var(--y)':'var(--r)';
- $('rgStats').textContent='Evaluations: '+(rg.stats?.total_evaluations||0)+' | Approval: '+(rg.stats?.approval_rate||0)+'% | Rejections: '+JSON.stringify(rg.stats?.gate_rejections||{})}}
-}catch(ex){}}
-rs();setInterval(rs,3000);
+const $ = (id) => document.getElementById(id);
+const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+const ws = new WebSocket(wsProtocol + location.host + '/ws?v=' + Date.now());
+const ML = 80;
+const IE = 10000;
+let trades = [];
+
+function fmt(value, prefix = '$') {
+  const n = Number(value ?? 0);
+  const sign = n >= 0 ? '' : '-';
+  return sign + prefix + Math.abs(n).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+function pct(value) {
+  return (Number(value ?? 0) * 100).toFixed(2) + '%';
+}
+
+function ts(value) {
+  const d = new Date(Number(value ?? 0) * 1000);
+  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
+function setBadge(live) {
+  $('dot').className = live ? 'dot d-on' : 'dot d-off';
+  $('badge').textContent = live ? 'LIVE' : 'DISCONNECTED';
+  $('badge').className = live ? 'badge b-on' : 'badge b-off';
+}
+
+function setGateState(id, passed) {
+  const el = $(id);
+  if (!el) return;
+  el.className = 'gate' + (passed === true ? ' pass' : passed === false ? ' fail' : '');
+}
+
+function rtl() {
+  $('tl').innerHTML = trades.map((t) => (
+    '<tr><td>' + ts(t.timestamp) + '</td><td class="s' + String(t.side || '').slice(0, 1).toLowerCase() + '">' +
+    t.side + '</td><td>' + Number(t.quantity ?? 0).toFixed(4) + '</td><td>' + fmt(t.price) + '</td><td>' +
+    fmt(t.commission) + '</td></tr>'
+  )).join('');
+}
+
+function alog(cssClass, message, timestamp = Date.now() / 1000) {
+  const el = $('el');
+  const row = document.createElement('div');
+  row.className = 'le';
+  row.innerHTML = '<span class="lt">' + ts(timestamp) + '</span> <span class="' + cssClass + '">' + message + '</span>';
+  el.prepend(row);
+  while (el.children.length > ML) {
+    el.removeChild(el.lastChild);
+  }
+}
+
+function updateSnapshot(d) {
+  $('eq').textContent = fmt(d.equity);
+  $('eq').className = 'cv ' + (Number(d.equity ?? 0) >= IE ? 'g' : 'r');
+  $('unpnl').textContent = fmt(d.unrealized_pnl);
+  $('unpnl').className = 'cv ' + (Number(d.unrealized_pnl ?? 0) >= 0 ? 'g' : 'r');
+  $('repnl').textContent = 'Realized: ' + fmt(d.realized_pnl);
+  const ret = ((Number(d.equity ?? IE) - IE) / IE) * 100;
+  $('ret').textContent = 'Return: ' + (ret >= 0 ? '+' : '') + ret.toFixed(2) + '%';
+  $('pos').textContent = Number(d.position ?? 0).toFixed(4).replace(/\\.?0+$/, '');
+  $('pos').className = 'cv ' + (d.position > 0 ? 'g' : d.position < 0 ? 'r' : 'y');
+  $('avgE').textContent = 'Avg Entry: ' + fmt(d.avg_entry);
+}
+
+function updateRiskGuard(rg) {
+  const feed = rg.feed_alive || {};
+  const risk = rg.risk || {};
+  const stats = rg.stats || {};
+  const sltp = rg.sl_tp || {};
+  const last = rg.last_evaluation || {};
+  const gateResults = last.gate_results || {};
+  const riskScore = Number(risk.risk_score ?? 0);
+
+  $('feedSt').innerHTML = feed.alive
+    ? '<span class="g">Alive</span>'
+    : '<span class="r">DEAD</span>' + (Number.isFinite(feed.stale_seconds) ? ' ' + Number(feed.stale_seconds).toFixed(1) + 's' : '');
+  $('ddSt').textContent = pct(risk.drawdown_pct);
+  $('cbSt').innerHTML = risk.circuit_breaker ? '<span class="r">ACTIVE</span>' : '<span class="g">OK</span>';
+  $('ksSt').innerHTML = risk.kill_switch ? '<span class="r">KILL</span>' : '<span class="g">OK</span>';
+  $('sltpSt').innerHTML = (sltp.positions_monitored || 0) > 0 ? '<span class="g">ACTIVE</span>' : '<span class="y">STANDBY</span>';
+
+  $('riskScore').textContent = (riskScore * 100).toFixed(0) + '%';
+  $('riskScore').className = 'cv ' + (riskScore < 0.5 ? 'g' : riskScore < 0.8 ? 'y' : 'r');
+  $('riskFill').style.width = (riskScore * 100).toFixed(1) + '%';
+  $('riskFill').style.background = riskScore < 0.5 ? 'var(--g)' : riskScore < 0.8 ? 'var(--y)' : 'var(--r)';
+
+  $('rgStats').textContent = 'Evaluations: ' + (stats.total_evaluations || 0) +
+    ' | Approved: ' + (stats.total_approved || 0) +
+    ' | Rejected: ' + (stats.total_rejected || 0) +
+    ' | Approval: ' + Number(stats.approval_rate || 0).toFixed(1) + '%';
+  $('slt').textContent = (sltp.sl_triggers || 0) + (sltp.tp_triggers || 0);
+
+  setGateState('g-feed', feed.alive);
+  setGateState('g-signal', gateResults.signal_valid);
+  setGateState('g-risk', gateResults.risk_check);
+  setGateState('g-pos', gateResults.position_sync);
+  setGateState('g-cd', gateResults.cooldown);
+}
+
+async function loadTrades() {
+  try {
+    const response = await fetch('/api/v3/trades?limit=20', { cache: 'no-store' });
+    if (!response.ok) return;
+    trades = await response.json();
+    rtl();
+  } catch (ex) {
+    console.error(ex);
+  }
+}
+
+async function rs() {
+  try {
+    const response = await fetch('/api/v3/status', { cache: 'no-store' });
+    if (!response.ok) return;
+
+    const s = await response.json();
+    if (!s.market_data) return;
+
+    $('cnt').textContent = 'Ticks: ' + (s.market_data.tick_count || 0) + ' | Signals: ' + (s.strategy?.signal_count || 0);
+    $('tt').textContent = s.execution?.fills_total ?? s.analytics?.total_trades ?? 0;
+    $('dd').textContent = pct(s.analytics?.max_drawdown_pct);
+    $('ap').textContent = s.risk_guard?.stats?.total_approved ?? 0;
+    $('rj').textContent = s.risk_guard?.stats?.total_rejected ?? s.execution?.orders_rejected ?? 0;
+
+    if (s.market_data.latest_price !== null && s.market_data.latest_price !== undefined) {
+      $('px').textContent = fmt(s.market_data.latest_price);
+    }
+
+    const roundTrips = s.analytics?.round_trips || 0;
+    const winRate = Number(s.analytics?.win_rate ?? 0);
+    if (roundTrips > 0) {
+      $('wr').textContent = (winRate * 100).toFixed(1) + '%';
+      $('wr').className = 'cv ' + (winRate >= 0.5 ? 'g' : winRate > 0 ? 'y' : 'r');
+    } else {
+      $('wr').textContent = '--';
+      $('wr').className = 'cv b';
+    }
+    $('rts').textContent = 'W: ' + (s.analytics?.wins || 0) + ' | L: ' + (s.analytics?.losses || 0) + ' | Trips: ' + roundTrips;
+
+    if (s.risk_guard) {
+      updateRiskGuard(s.risk_guard);
+    }
+  } catch (ex) {
+    console.error(ex);
+  }
+}
+
+ws.onopen = () => setBadge(true);
+ws.onclose = () => setBadge(false);
+ws.onmessage = (e) => {
+  try {
+    const d = JSON.parse(e.data);
+    switch (d.type) {
+      case 'PNL_SNAPSHOT':
+        updateSnapshot(d);
+        alog('lf', 'SNAPSHOT eq=' + d.equity + ' pos=' + d.position, d.timestamp);
+        break;
+      case 'TICK':
+        $('px').textContent = fmt(d.price);
+        alog('lk', 'TICK ' + d.symbol + ' @ ' + d.price, d.timestamp);
+        break;
+      case 'FILL':
+        trades.unshift(d);
+        if (trades.length > 20) {
+          trades.pop();
+        }
+        rtl();
+        alog('lf', 'FILL ' + d.side + ' ' + d.symbol + ' x' + d.quantity + ' @ ' + d.price, d.timestamp);
+        rs();
+        break;
+      case 'SIGNAL':
+        alog(
+          'ls',
+          'SIGNAL ' + d.side + ' ' + d.symbol + ' @ ' + d.price + ' str=' + Number(d.strength ?? 0).toFixed(2) +
+            (d.metadata && d.metadata.trigger_type ? ' [' + d.metadata.trigger_type + ']' : ''),
+          d.timestamp
+        );
+        break;
+      case 'RISK_REJECTED':
+        alog('lr', 'REJECTED ' + d.reason, d.timestamp);
+        rs();
+        break;
+      case 'HEARTBEAT':
+        rs();
+        break;
+      default:
+        break;
+    }
+  } catch (ex) {
+    console.error(ex);
+  }
+};
+
+loadTrades();
+rs();
+setInterval(rs, 3000);
 </script></body></html>
 """)
+
+
+

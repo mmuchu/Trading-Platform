@@ -15,16 +15,16 @@ class BinanceConfig:
 
 @dataclass
 class RiskConfig:
-    max_drawdown_pct: float = 0.05
-    max_position_size: int = 3
-    stop_loss_pct: float = 0.02
-    take_profit_pct: float = 0.04
+    max_drawdown_pct: float = 0.10
+    max_position_size: int = 1
+    stop_loss_pct: float = 0.005
+    take_profit_pct: float = 0.01
     risk_per_trade_pct: float = 0.01
 
 @dataclass
 class BrokerConfig:
     initial_cash: float = 10000.0
-    commission_pct: float = 0.001
+    commission_pct: float = 0.0002
     slippage_pct: float = 0.0005
 
 @dataclass

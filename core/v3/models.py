@@ -8,6 +8,18 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {k: _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_json_ready(v) for v in value)
+    return value
+
+
 class EventType(Enum):
     TICK = "TICK"
     SIGNAL = "SIGNAL"
@@ -35,9 +47,7 @@ class BaseEvent:
     source: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        result = dict(asdict(self))
-        result["type"] = self.type.value
-        return result
+        return _json_ready(asdict(self))
 
 
 @dataclass

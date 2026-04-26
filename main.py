@@ -18,6 +18,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import shutil
+for _r,_ds,_fs in os.walk(os.path.dirname(os.path.abspath(__file__))):
+    for _d in list(_ds):
+        if _d=="__pycache__":
+            shutil.rmtree(os.path.join(_r,_d),ignore_errors=True)
+print("[main] __pycache__ cleared")
 
 from config.settings import settings
 

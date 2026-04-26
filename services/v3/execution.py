@@ -164,6 +164,7 @@ class V3ExecutionService:
 
         # --- Fill simulation -----------------------------------------------
         fill = self._simulate_fill(signal, order_id)
+        if fill.quantity <= 0: return
         await self.bus.publish(fill)
         self._fills_total += 1
         logger.info(
@@ -236,6 +237,13 @@ class V3ExecutionService:
             if pos.is_flat or pos.is_short:
                 qty = max_qty
 
+        mx=self._max_position_size
+        if signal.side==Side.SELL and pos.quantity<0:
+            gap=mx-abs(pos.quantity)
+            if gap<qty:qty=max(gap,0)
+        if signal.side==Side.BUY and pos.quantity>0:
+            gap=mx-pos.quantity
+            if gap<qty:qty=max(gap,0)
         qty = round(qty, 8)
         if qty <= 0:
             qty = 0.0
@@ -284,11 +292,12 @@ class V3ExecutionService:
                     close_qty = min(qty, abs(pos.quantity))
                     trade_pnl = (pos.avg_entry - price) * close_qty
                     pos.realized_pnl += trade_pnl
-                    remaining = qty - close_qty
-                    if remaining > 0:
-                        pos.quantity = remaining
+                    pos.quantity += close_qty
+                    leftover = qty - close_qty
+                    if leftover > 0:
+                        pos.quantity = leftover
                         pos.avg_entry = price
-                    else:
+                    elif abs(pos.quantity) < 1e-8:
                         pos.quantity = 0.0
                         pos.avg_entry = 0.0
                 else:
@@ -317,6 +326,8 @@ class V3ExecutionService:
                 total_cost = abs(pos.quantity) * pos.avg_entry + qty * price
                 pos.quantity -= qty
                 pos.avg_entry = total_cost / abs(pos.quantity) if pos.quantity else 0.0
+        pos.quantity=round(pos.quantity,8)
+        if abs(pos.quantity)<1e-8:pos.quantity=0.0;pos.avg_entry=0.0
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -326,7 +337,8 @@ class V3ExecutionService:
     def equity(self) -> float:
         """Current total equity (cash + positions at last known prices)."""
         total_realized = sum(p.realized_pnl for p in self._positions.values())
-        return self._cash + total_realized
+        total_unrealized=sum(p.quantity*p.avg_entry for p in self._positions.values())
+        return self._cash+total_realized+total_unrealized
 
     @property
     def stats(self) -> Dict[str, Any]:
@@ -340,7 +352,7 @@ class V3ExecutionService:
             }
 
         total_realized = sum(p.realized_pnl for p in self._positions.values())
-        equity = self._cash + total_realized
+        equity = self.equity
 
         return {
             "cash": round(self._cash, 2),

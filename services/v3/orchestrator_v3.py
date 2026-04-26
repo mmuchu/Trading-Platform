@@ -77,7 +77,6 @@ class V3Orchestrator:
         self.bus.subscribe(EventType.TICK, self.strategy.handle_tick)
         self.bus.subscribe(EventType.TICK, self.analytics.handle_tick)
         self.bus.subscribe(EventType.SIGNAL, self.execution.handle_signal)
-        self.bus.subscribe(EventType.FILL, self.analytics.handle_fill)
         logger.info("Event bus wired: %d handlers", self.bus.handler_count)
 
         # Start analytics snapshot loop
