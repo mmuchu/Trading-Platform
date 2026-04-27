@@ -67,7 +67,7 @@ class RegimeConfig:
     trend_adx_threshold: float = 0.20     # lower for tick-level data (was 0.35 for candle data)
     volatile_percentile: float = 0.80
     min_bars: int = 20
-    regime_stability_bars: int = 3        # faster regime adaptation (was 5)
+    regime_stability_bars: int = 10        # faster regime adaptation (was 5)
 
 
 @dataclass

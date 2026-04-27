@@ -142,10 +142,10 @@ class PositionStateMachine:
                (pos.side == Side.SELL and side == Side.SELL):
                 if hold_time>120:
                   logger.warning("FSM %s stale %.0fs reset",symbol,hold_time)
-                  self._positions.pop(sym,None)
+                  self._positions.pop(symbol,None)
                 if hold_time>120:
                   logger.warning("FSM %s stale %.0fs reset",symbol,hold_time)
-                  self._positions.pop(sym,None)
+                  self._positions.pop(symbol,None)
                 return False, f"Already in {pos.side.value} position (hold {hold_time:.0f}s)"
             # Reverse signal: allow if min hold time met
             if hold_time < self.cfg.min_hold_time_sec:
