@@ -34,7 +34,7 @@ class RiskConfig:
 
     # SL/TP
     stop_loss_pct: float = 0.001             # 1.5% stop loss
-    take_profit_pct: float = 0.002            # 3% take profit
+    take_profit_pct: float = 0.002            # 0.2% take profit
 
     # Circuit breaker
     circuit_breaker_losses: int = 3          # consecutive losses to trigger
@@ -53,7 +53,8 @@ class StrategyConfig:
     momentum_lookback: int = 20
     momentum_threshold_pct: float = 0.3      # 0.3% minimum move to signal
     momentum_min_strength: float = 0.25     # minimum signal strength
-    signal_cooldown_sec: float = 10.0        # cooldown between signals
+    signal_cooldown_sec: float = 30.0
+      tick_cooldown: int = 10        # cooldown between signals
     breakout_window: int = 20
     breakout_threshold_pct: float = 0.02
 
@@ -77,6 +78,7 @@ class SignalScoreConfig:
     strength_weight: float = 0.15
     trend_weight: float = 0.20
     min_score_to_emit: float = 60.0
+      strong_trade_score: float = 70.0
     volatile_regime_penalty: float = -30
     range_regime_penalty: float = -15
 

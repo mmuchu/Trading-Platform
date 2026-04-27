@@ -238,7 +238,8 @@ class V3ExecutionService:
                     return
 
             # Accept signal → transition to ENTERING
-            qty = self.compute_position_size(signal)
+            atr = signal.metadata.get('atr_pct',0.0)
+            qty = self.compute_position_size(signal, atr_pct=atr)
             if self.fsm and sym in self.fsm._positions and self.get_position(sym).quantity==0:
               self.fsm._positions.pop(sym)
 
@@ -351,7 +352,8 @@ class V3ExecutionService:
             return RiskRejectedEvent(reason=f"Max short position -{self._max_position}")
 
         # Cash check
-        estimated_cost = signal.price * self.compute_position_size(signal) * (1 + self._commission_pct + self._slippage_pct)
+        atr2 = signal.metadata.get('atr_pct',0.0)
+          estimated_cost = signal.price * self.compute_position_size(signal, atr_pct=atr2) * (1 + self._commission_pct + self._slippage_pct)
         if signal.side == Side.BUY and self._cash < estimated_cost:
             return RiskRejectedEvent(reason=f"Insufficient cash (have ${self._cash:.2f}, need ${estimated_cost:.2f})")
 
@@ -373,7 +375,8 @@ class V3ExecutionService:
         else:
             fill_price = signal.price * (1 - slip)
 
-        qty = self.compute_position_size(signal)
+        atr = signal.metadata.get('atr_pct',0.0)
+            qty = self.compute_position_size(signal, atr_pct=atr)
         commission = fill_price * qty * self._commission_pct
 
         return FillEvent(

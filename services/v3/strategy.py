@@ -39,8 +39,9 @@ class SignalScoreConfig:
     regime_weight: float = 0.25           # weight of regime alignment score
     strength_weight: float = 0.15         # weight of signal strength
     trend_weight: float = 0.20            # weight of trend alignment score
-    min_score_to_emit: float = 45.0       # minimum composite score (0-100) to emit signal
+    min_score_to_emit: float = 60.0       # minimum composite score (0-100) to emit signal
     max_score: float = 100.0
+      strong_trade_score: float = 70.0
     cooldown_sec: float = 10.0            # minimum time between signals
     volatile_regime_penalty: float = -30  # score penalty in VOLATILE regime
     range_regime_penalty: float = -15     # score penalty in RANGE regime (for momentum)
@@ -136,6 +137,7 @@ class V3StrategyService:
 
         # Execution reference for equity data
         self._execution = None
+        self._last_signal_tick: Dict[str,int] = {}
 
         # Only Momentum in v3.2
         momentum = MomentumV3()
@@ -231,6 +233,7 @@ class V3StrategyService:
                 # Emit
                 self._signal_count += 1
                 self._last_signal[tick.symbol] = now
+                  self._last_signal_tick[tick.symbol] = self._tick_count
                 self._recent_scores[tick.symbol].append(score)
 
                 # Update state memory
@@ -315,15 +318,15 @@ class V3StrategyService:
         Filter signals based on regime. Returns (pass, reason).
         """
         # VOLATILE: only allow very high-confidence signals
-        if regime == RegimeType.VOLATILE and score < 40:
+        if regime == RegimeType.VOLATILE and score < self.score_cfg.strong_trade_score:
             return False, f"VOLATILE regime requires score >= 75 (got {score})"
 
         # RANGE: momentum signals need higher threshold
-        if regime == RegimeType.RANGE and score < self.score_cfg.min_score_to_emit + 0:
+        if regime == RegimeType.RANGE and score < self.score_cfg.strong_trade_score:
             return False, f"RANGE regime requires score >= {self.score_cfg.min_score_to_emit + 0} (got {score})"
 
         # Below minimum score threshold
-        if score < self.score_cfg.min_score_to_emit - 20:
+        if score < self.score_cfg.55.0:
             return False, f"Score {score} below minimum {self.score_cfg.min_score_to_emit}"
 
         # Anti-churn: consecutive same-side signals with declining scores
