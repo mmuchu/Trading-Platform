@@ -1,26 +1,24 @@
 """
-V3 Dashboard — FastAPI app with real-time WebSocket feed.
-Separate from dashboard/app.py (v1) so both coexist.
+V3.2 Dashboard — FastAPI Application
+======================================
+Real-time monitoring for the v3.2 regime-aware state machine architecture.
 
-v3.1: Added risk guard status panel, SL/TP indicators, and gate visualization.
+New in v3.2:
+  - Regime indicator (TREND / RANGE / VOLATILE)
+  - Position FSM state display
+  - Signal score display
+  - SL/TP exit counters
+  - Risk checker status (circuit breaker, kill switch)
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from typing import Optional
 
-import json
-_o=json.JSONEncoder.default
-def _sd(s,o):
- if isinstance(o,float)and(o!=o or abs(o)>1e308):return None
- return _o(s,o)
-json.JSONEncoder.default=_sd
-
-import math
-_je=json.JSONEncoder.default
-json.JSONEncoder.default=lambda s,o:None if isinstance(o,float)and(math.isnan(o)or math.isinf(o))else _je(s,o)
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,65 +29,82 @@ _orchestrator = None
 
 
 def create_v3_app(orchestrator=None) -> FastAPI:
-    """Factory — pass V3Orchestrator to wire endpoints to live data."""
+    """Factory — pass the V3Orchestrator to wire endpoints."""
     global _orchestrator
     _orchestrator = orchestrator
 
-    app = FastAPI(title="Trading Platform v3.1", version="3.1")
+    app = FastAPI(title="Trading Platform v3.2 Dashboard", version="3.2")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"], allow_credentials=True,
-        allow_methods=["*"], allow_headers=["*"],
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @app.get("/", response_class=HTMLResponse)
-    async def index():
+    async def dashboard_html():
         return HTML_RESPONSE
 
     @app.get("/api/v3/status")
-    async def status():
-        return _orchestrator.system_status if _orchestrator else {"error": "not initialized"}
+    async def v3_status():
+        if not _orchestrator:
+            return {"error": "Not initialized"}
+        return _orchestrator.system_status
 
     @app.get("/api/v3/trades")
-    async def trades(limit: int = 100):
+    async def v3_trades(limit: int = 100):
         if not _orchestrator:
             return []
         return _orchestrator.analytics.trade_log[-limit:]
 
     @app.get("/api/v3/equity-curve")
-    async def equity_curve():
-        return _orchestrator.analytics.equity_curve_data if _orchestrator else []
+    async def v3_equity():
+        if not _orchestrator:
+            return []
+        return _orchestrator.analytics.equity_curve_data
 
     @app.get("/api/v3/performance")
-    async def performance():
-        return _orchestrator.analytics.performance_summary if _orchestrator else {}
+    async def v3_perf():
+        if not _orchestrator:
+            return {}
+        return _orchestrator.analytics.performance_summary
 
     @app.get("/api/v3/positions")
-    async def positions():
-        return _orchestrator.execution.stats.get("positions", {}) if _orchestrator else {}
+    async def v3_positions():
+        if not _orchestrator:
+            return {}
+        return _orchestrator.execution.stats.get("positions", {})
 
     @app.get("/api/v3/ticks")
-    async def ticks(limit: int = 50):
+    async def v3_ticks(limit: int = 50):
         if not _orchestrator:
             return []
-        return [t.to_dict() for t in _orchestrator.market_data.recent_ticks(limit)]
+        ticks = _orchestrator.market_data.recent_ticks(limit)
+        return [t.to_dict() for t in ticks]
 
-    @app.get("/api/v3/risk-guard")
-    async def risk_guard_status():
+    @app.get("/api/v3/regime")
+    async def v3_regime():
         if not _orchestrator:
-            return {"error": "not initialized"}
-        return _orchestrator.risk_guard.get_system_status()
+            return {}
+        return _orchestrator.regime_classifier.stats
 
-    @app.get("/api/v3/sltp-triggers")
-    async def sltp_triggers(limit: int = 20):
+    @app.get("/api/v3/fsm")
+    async def v3_fsm():
         if not _orchestrator:
-            return []
-        return _orchestrator.risk_guard.sl_tp.get_triggers(limit)
+            return {}
+        return _orchestrator.position_fsm.stats
 
-    @app.websocket("/ws")
-    async def ws_v3(websocket: WebSocket):
+    @app.get("/api/v3/risk")
+    async def v3_risk():
+        if not _orchestrator:
+            return {}
+        return _orchestrator.risk_checker.stats
+
+    @app.websocket("/ws/v3")
+    async def websocket_v3(websocket: WebSocket):
         await websocket.accept()
-        logger.info("V3 WebSocket client connected")
+        logger.info("V3.2 WebSocket client connected")
         queue = None
         if _orchestrator:
             queue = _orchestrator.analytics.subscribe_dashboard()
@@ -97,14 +112,14 @@ def create_v3_app(orchestrator=None) -> FastAPI:
             while True:
                 if queue:
                     try:
-                        data = await asyncio.to_thread(queue.get, timeout=1.0)
+                        data = await asyncio.wait_for(queue.get(), timeout=1.0)
                         await websocket.send_json(data)
-                    except Exception:
+                    except asyncio.TimeoutError:
                         await websocket.send_json({"type": "HEARTBEAT", "ts": time.time()})
                 else:
                     await asyncio.sleep(1)
         except WebSocketDisconnect:
-            logger.info("V3 WebSocket client disconnected")
+            logger.info("V3.2 WebSocket client disconnected")
         finally:
             if _orchestrator and queue:
                 _orchestrator.analytics.unsubscribe_dashboard(queue)
@@ -112,304 +127,372 @@ def create_v3_app(orchestrator=None) -> FastAPI:
     return app
 
 
+# ─── Embedded Dashboard HTML ──────────────────────────────────────
+
 HTML_RESPONSE = HTMLResponse(content="""
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Trading Platform v3.1 — Risk Guard</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0e17;--bg2:#111827;--card:#1a2332;--border:#1e3a5f;--txt:#e2e8f0;--dim:#94a3b8;--g:#10b981;--r:#ef4444;--b:#3b82f6;--y:#f59e0b;--p:#a855f7;--o:#f97316}
-body{font-family:'JetBrains Mono','Fira Code',monospace;background:var(--bg);color:var(--txt);min-height:100vh}
-.hdr{background:var(--bg2);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;justify-content:space-between;align-items:center}
-.hdr h1{font-size:17px;font-weight:700;letter-spacing:1px}
-.badge{padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600}
-.b-on{background:rgba(16,185,129,.15);color:var(--g);border:1px solid var(--g)}
-.b-off{background:rgba(239,68,68,.15);color:var(--r);border:1px solid var(--r)}
-.b-warn{background:rgba(245,158,11,.15);color:var(--y);border:1px solid var(--y)}
-.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;padding:18px 24px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:18px}
-.ch{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px}
-.cv{font-size:26px;font-weight:700}
-.cs{font-size:11px;color:var(--dim);margin-top:4px}
-.g{color:var(--g)}.r{color:var(--r)}.b{color:var(--b)}.y{color:var(--y)}.p{color:var(--p)}.o{color:var(--o)}
-.sec{padding:0 24px 18px}
-.pg{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;padding:7px 10px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);border-bottom:1px solid var(--border)}
-td{padding:7px 10px;border-bottom:1px solid rgba(30,58,95,.4)}
-tr:hover{background:rgba(59,130,246,.05)}
-.sb{color:var(--g);font-weight:600}.ss{color:var(--r);font-weight:600}
-.logc{background:var(--card);border:1px solid var(--border);border-radius:8px;max-height:380px;overflow-y:auto;font-size:11px;padding:10px}
-.le{padding:2px 0}.lt{color:var(--dim)}.lk{color:var(--b)}.ls{color:var(--y)}.lf{color:var(--g)}.lr{color:var(--r)}.lp{color:var(--p)}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;animation:p 2s infinite}
-.d-on{background:var(--g)}.d-off{background:var(--r);animation:none}
-@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}
-.gates{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.gate{padding:3px 10px;border-radius:12px;font-size:10px;font-weight:600;border:1px solid var(--border);background:rgba(30,58,95,.3);color:var(--dim)}
-.gate.pass{border-color:var(--g);color:var(--g);background:rgba(16,185,129,.1)}
-.gate.fail{border-color:var(--r);color:var(--r);background:rgba(239,68,68,.1)}
-.risk-bar{width:100%;height:6px;background:rgba(30,58,95,.5);border-radius:3px;margin-top:8px;overflow:hidden}
-.risk-fill{height:100%;border-radius:3px;transition:width .5s,background .5s}
-@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}.pg{grid-template-columns:1fr}}
-</style></head><body>
-<div class="hdr"><h1>TRADING PLATFORM <span class="badge" style="background:rgba(168,85,247,.15);color:var(--p);border:1px solid var(--p)">v3.1</span> <span style="font-size:10px;color:var(--dim)">RISK GUARD</span></h1><div><span class="dot d-off" id="dot"></span><span class="badge b-off" id="badge">INITIALIZING</span></div></div>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Platform v3.2</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a2332;
+            --border: #1e3a5f;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --green: #10b981;
+            --red: #ef4444;
+            --blue: #3b82f6;
+            --yellow: #f59e0b;
+            --purple: #8b5cf6;
+            --cyan: #06b6d4;
+        }
+        body {
+            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 18px; font-weight: 700; letter-spacing: 1px; }
+        .header .badge {
+            padding: 4px 12px; border-radius: 20px;
+            font-size: 12px; font-weight: 600; margin-left: 8px;
+        }
+        .badge-live { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid var(--green); }
+        .badge-off { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid var(--red); }
+        .badge-regime {
+            font-size: 11px; padding: 3px 10px; border-radius: 12px;
+            font-weight: 700; letter-spacing: 1px;
+        }
+        .regime-trend { background: rgba(16,185,129,0.2); color: var(--green); border: 1px solid var(--green); }
+        .regime-range { background: rgba(245,158,11,0.2); color: var(--yellow); border: 1px solid var(--yellow); }
+        .regime-volatile { background: rgba(239,68,68,0.2); color: var(--red); border: 1px solid var(--red); }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            padding: 20px 24px;
+        }
+        .grid-5 { grid-template-columns: repeat(5, 1fr); }
+        .grid-6 { grid-template-columns: repeat(6, 1fr); }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px 20px;
+        }
+        .card-header {
+            font-size: 10px; text-transform: uppercase;
+            letter-spacing: 1.5px; color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+        .card-value { font-size: 24px; font-weight: 700; }
+        .green { color: var(--green); }
+        .red { color: var(--red); }
+        .blue { color: var(--blue); }
+        .yellow { color: var(--yellow); }
+        .purple { color: var(--purple); }
+        .cyan { color: var(--cyan); }
+        .card-sub { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+        .section { padding: 0 24px 20px; }
+        .panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th {
+            text-align: left; padding: 8px 12px;
+            font-size: 10px; text-transform: uppercase;
+            letter-spacing: 1px; color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+        td { padding: 6px 12px; border-bottom: 1px solid rgba(30,58,95,0.4); }
+        tr:hover { background: rgba(59,130,246,0.05); }
+        .side-buy { color: var(--green); font-weight: 600; }
+        .side-sell { color: var(--red); font-weight: 600; }
+        .log-container {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 8px; max-height: 400px;
+            overflow-y: auto; font-size: 11px; padding: 10px;
+        }
+        .log-entry { padding: 2px 0; }
+        .log-time { color: var(--text-secondary); }
+        .log-tick { color: var(--blue); }
+        .log-signal { color: var(--yellow); }
+        .log-fill { color: var(--green); }
+        .log-risk { color: var(--red); }
+        .log-regime { color: var(--purple); }
+        .log-fsm { color: var(--cyan); }
+        .ws-dot {
+            display: inline-block; width: 8px; height: 8px;
+            border-radius: 50%; margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        .ws-on { background: var(--green); }
+        .ws-off { background: var(--red); animation: none; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        .fsm-state {
+            display: inline-block; padding: 2px 8px; border-radius: 4px;
+            font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+            background: rgba(6,182,212,0.15); color: var(--cyan); border: 1px solid var(--cyan);
+        }
+        .kill-active { color: var(--red); font-weight: 700; }
+        .cb-active { color: var(--yellow); font-weight: 700; }
+        @media (max-width: 900px) {
+            .grid, .grid-5, .grid-6 { grid-template-columns: repeat(2, 1fr); }
+            .panel-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>TRADING PLATFORM <span style="color:var(--blue)">v3.2</span>
+        <span style="font-size:10px;color:var(--text-secondary)">REGIME-AWARE STATE MACHINE</span>
+    </h1>
+    <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge-regime regime-range" id="regimeBadge">RANGE</span>
+        <span class="ws-dot ws-off" id="wsDot"></span>
+        <span class="badge badge-off" id="statusBadge">INITIALIZING</span>
+    </div>
+</div>
 
 <div class="grid">
-<div class="card"><div class="ch">Equity</div><div class="cv b" id="eq">$10,000.00</div><div class="cs" id="ret">Return: 0.00%</div></div>
-<div class="card"><div class="ch">Unrealized PnL</div><div class="cv g" id="unpnl">$0.00</div><div class="cs" id="repnl">Realized: $0.00</div></div>
-<div class="card"><div class="ch">Position</div><div class="cv y" id="pos">0</div><div class="cs" id="avgE">Avg Entry: $0.00</div></div>
-<div class="card"><div class="ch">Latest Price</div><div class="cv" id="px">$65,000.00</div><div class="cs" id="cnt">Ticks: 0 | Signals: 0</div></div>
-<div class="card"><div class="ch">Win Rate</div><div class="cv b" id="wr">--</div><div class="cs" id="rts">W: 0 | L: 0 | Trips: 0</div></div>
+    <div class="card">
+        <div class="card-header">Equity</div>
+        <div class="card-value blue" id="equity">$10,000.00</div>
+        <div class="card-sub" id="retPct">Return: 0.00%</div>
+    </div>
+    <div class="card">
+        <div class="card-header">Unrealized PnL</div>
+        <div class="card-value green" id="unPnl">$0.00</div>
+        <div class="card-sub" id="rePnl">Realized: $0.00</div>
+    </div>
+    <div class="card">
+        <div class="card-header">Position</div>
+        <div class="card-value yellow" id="pos">0</div>
+        <div class="card-sub" id="avgE">Avg Entry: $0.00</div>
+    </div>
+    <div class="card">
+        <div class="card-header">Latest Price</div>
+        <div class="card-value" id="price">$65,000.00</div>
+        <div class="card-sub" id="counts">Ticks: 0 | Signals: 0</div>
+    </div>
 </div>
 
-<div class="sec" style="margin-top:4px">
-<div class="card">
-<div class="ch">5-Gate Risk Guard</div>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-<div class="gates" id="gates">
-<span class="gate" id="g-feed">Feed</span>
-<span class="gate" id="g-signal">Signal</span>
-<span class="gate" id="g-risk">Risk</span>
-<span class="gate" id="g-pos">Position</span>
-<span class="gate" id="g-cd">Cooldown</span>
+<div class="grid grid-6">
+    <div class="card">
+        <div class="card-header">FSM State</div>
+        <div class="card-value cyan" id="fsmState"><span class="fsm-state">FLAT</span></div>
+        <div class="card-sub" id="fsmCycles">Cycles: 0</div>
+    </div>
+    <div class="card">
+        <div class="card-header">Regime</div>
+        <div class="card-value purple" id="regimeVal">RANGE</div>
+        <div class="card-sub" id="regimeTrans">Transitions: 0</div>
+    </div>
+    <div class="card">
+        <div class="card-header">Circuit Breaker</div>
+        <div class="card-value" id="cbStatus">OK</div>
+        <div class="card-sub" id="cbLosses">Consec. losses: 0</div>
+    </div>
+    <div class="card">
+        <div class="card-header">Kill Switch</div>
+        <div class="card-value green" id="killStatus">OFF</div>
+        <div class="card-sub" id="ddPct">Drawdown: 0.00%</div>
+    </div>
+    <div class="card">
+        <div class="card-header">SL / TP Exits</div>
+        <div class="card-value yellow" id="sltpExits">0 / 0</div>
+        <div class="card-sub" id="winRate">Win Rate: 0%</div>
+    </div>
 </div>
-<div style="text-align:right">
-<div style="font-size:11px;color:var(--dim)">Risk Score</div>
-<div style="font-size:20px;font-weight:700" id="riskScore">0%</div>
-</div>
-</div>
-<div class="risk-bar"><div class="risk-fill" id="riskFill" style="width:0%;background:var(--g)"></div></div>
-<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:12px">
-<div><div style="font-size:10px;color:var(--dim)">Feed</div><div style="font-size:13px" id="feedSt">--</div></div>
-<div><div style="font-size:10px;color:var(--dim)">Drawdown</div><div style="font-size:13px" id="ddSt">--</div></div>
-<div><div style="font-size:10px;color:var(--dim)">Circuit Brk</div><div style="font-size:13px" id="cbSt">--</div></div>
-<div><div style="font-size:10px;color:var(--dim)">Kill Switch</div><div style="font-size:13px" id="ksSt">--</div></div>
-<div><div style="font-size:10px;color:var(--dim)">SL/TP Active</div><div style="font-size:13px" id="sltpSt">--</div></div>
-</div>
-<div style="margin-top:10px;font-size:11px;color:var(--dim)" id="rgStats"></div>
-</div>
+<div class="grid grid-6" style="margin-top:16px;">
+    <div class="card">
+        <div class="card-header">Signals Suppressed</div>
+        <div class="card-value red" id="suppressed">0</div>
+        <div class="card-sub" id="avgScore">Avg Score: 0 | Stress: <span id="stressVal">0%</span></div>
+    </div>
+    <div class="card">
+        <div class="card-header">Equity Stress</div>
+        <div class="card-value" id="stressLevel">0%</div>
+        <div class="card-sub" id="stressBlocks">Stress-blocked: 0</div>
+    </div>
 </div>
 
-<div class="sec"><div class="pg">
-<div class="card"><div class="ch">Trade Log</div><table><thead><tr><th>Time</th><th>Side</th><th>Qty</th><th>Price</th><th>Comm</th></tr></thead><tbody id="tl"></tbody></table></div>
-<div class="card"><div class="ch">Live Event Stream</div><div class="logc" id="el"></div></div>
-</div></div>
-
-<div class="sec"><div class="grid">
-<div class="card"><div class="ch">Total Trades</div><div class="cv b" id="tt">0</div></div>
-<div class="card"><div class="ch">Max Drawdown</div><div class="cv r" id="dd">0.00%</div></div>
-<div class="card"><div class="ch">Approved</div><div class="cv g" id="ap">0</div></div>
-<div class="card"><div class="ch">Rejected</div><div class="cv r" id="rj">0</div></div>
-<div class="card"><div class="ch">SL/TP Fires</div><div class="cv o" id="slt">0</div></div>
-</div></div>
+<div class="section">
+    <div class="panel-grid">
+        <div class="card">
+            <div class="card-header">Trade Log</div>
+            <table>
+                <thead><tr><th>Time</th><th>Side</th><th>Qty</th><th>Price</th><th>Comm</th></tr></thead>
+                <tbody id="tradeLog"></tbody>
+            </table>
+        </div>
+        <div class="card">
+            <div class="card-header">Live Event Stream</div>
+            <div class="log-container" id="eventLog"></div>
+        </div>
+    </div>
+</div>
 
 <script>
-const $ = (id) => document.getElementById(id);
-const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-const ws = new WebSocket(wsProtocol + location.host + '/ws?v=' + Date.now());
-const ML = 80;
-const IE = 10000;
+const $ = id => document.getElementById(id);
+const ws = new WebSocket('ws://' + location.host + '/ws/v3');
+const MAX_LOG = 100;
+const INIT_EQ = 10000;
 let trades = [];
 
-function fmt(value, prefix = '$') {
-  const n = Number(value ?? 0);
-  const sign = n >= 0 ? '' : '-';
-  return sign + prefix + Math.abs(n).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  });
+function fmt(n, p='$') {
+    const s = n >= 0 ? '' : '-';
+    return s + p + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function ts(t) {
+    const d = new Date(t*1000);
+    return d.toLocaleTimeString('en-US',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0');
 }
 
-function pct(value) {
-  return (Number(value ?? 0) * 100).toFixed(2) + '%';
-}
-
-function ts(value) {
-  const d = new Date(Number(value ?? 0) * 1000);
-  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
-}
-
-function setBadge(live) {
-  $('dot').className = live ? 'dot d-on' : 'dot d-off';
-  $('badge').textContent = live ? 'LIVE' : 'DISCONNECTED';
-  $('badge').className = live ? 'badge b-on' : 'badge b-off';
-}
-
-function setGateState(id, passed) {
-  const el = $(id);
-  if (!el) return;
-  el.className = 'gate' + (passed === true ? ' pass' : passed === false ? ' fail' : '');
-}
-
-function rtl() {
-  $('tl').innerHTML = trades.map((t) => (
-    '<tr><td>' + ts(t.timestamp) + '</td><td class="s' + String(t.side || '').slice(0, 1).toLowerCase() + '">' +
-    t.side + '</td><td>' + Number(t.quantity ?? 0).toFixed(4) + '</td><td>' + fmt(t.price) + '</td><td>' +
-    fmt(t.commission) + '</td></tr>'
-  )).join('');
-}
-
-function alog(cssClass, message, timestamp = Date.now() / 1000) {
-  const el = $('el');
-  const row = document.createElement('div');
-  row.className = 'le';
-  row.innerHTML = '<span class="lt">' + ts(timestamp) + '</span> <span class="' + cssClass + '">' + message + '</span>';
-  el.prepend(row);
-  while (el.children.length > ML) {
-    el.removeChild(el.lastChild);
-  }
-}
-
-function updateSnapshot(d) {
-  $('eq').textContent = fmt(d.equity);
-  $('eq').className = 'cv ' + (Number(d.equity ?? 0) >= IE ? 'g' : 'r');
-  $('unpnl').textContent = fmt(d.unrealized_pnl);
-  $('unpnl').className = 'cv ' + (Number(d.unrealized_pnl ?? 0) >= 0 ? 'g' : 'r');
-  $('repnl').textContent = 'Realized: ' + fmt(d.realized_pnl);
-  const ret = ((Number(d.equity ?? IE) - IE) / IE) * 100;
-  $('ret').textContent = 'Return: ' + (ret >= 0 ? '+' : '') + ret.toFixed(2) + '%';
-  $('pos').textContent = Number(d.position ?? 0).toFixed(4).replace(/\\.?0+$/, '');
-  $('pos').className = 'cv ' + (d.position > 0 ? 'g' : d.position < 0 ? 'r' : 'y');
-  $('avgE').textContent = 'Avg Entry: ' + fmt(d.avg_entry);
-}
-
-function updateRiskGuard(rg) {
-  const feed = rg.feed_alive || {};
-  const risk = rg.risk || {};
-  const stats = rg.stats || {};
-  const sltp = rg.sl_tp || {};
-  const last = rg.last_evaluation || {};
-  const gateResults = last.gate_results || {};
-  const riskScore = Number(risk.risk_score ?? 0);
-
-  $('feedSt').innerHTML = feed.alive
-    ? '<span class="g">Alive</span>'
-    : '<span class="r">DEAD</span>' + (Number.isFinite(feed.stale_seconds) ? ' ' + Number(feed.stale_seconds).toFixed(1) + 's' : '');
-  $('ddSt').textContent = pct(risk.drawdown_pct);
-  $('cbSt').innerHTML = risk.circuit_breaker ? '<span class="r">ACTIVE</span>' : '<span class="g">OK</span>';
-  $('ksSt').innerHTML = risk.kill_switch ? '<span class="r">KILL</span>' : '<span class="g">OK</span>';
-  $('sltpSt').innerHTML = (sltp.positions_monitored || 0) > 0 ? '<span class="g">ACTIVE</span>' : '<span class="y">STANDBY</span>';
-
-  $('riskScore').textContent = (riskScore * 100).toFixed(0) + '%';
-  $('riskScore').className = 'cv ' + (riskScore < 0.5 ? 'g' : riskScore < 0.8 ? 'y' : 'r');
-  $('riskFill').style.width = (riskScore * 100).toFixed(1) + '%';
-  $('riskFill').style.background = riskScore < 0.5 ? 'var(--g)' : riskScore < 0.8 ? 'var(--y)' : 'var(--r)';
-
-  $('rgStats').textContent = 'Evaluations: ' + (stats.total_evaluations || 0) +
-    ' | Approved: ' + (stats.total_approved || 0) +
-    ' | Rejected: ' + (stats.total_rejected || 0) +
-    ' | Approval: ' + Number(stats.approval_rate || 0).toFixed(1) + '%';
-  $('slt').textContent = (sltp.sl_triggers || 0) + (sltp.tp_triggers || 0);
-
-  setGateState('g-feed', feed.alive);
-  setGateState('g-signal', gateResults.signal_valid);
-  setGateState('g-risk', gateResults.risk_check);
-  setGateState('g-pos', gateResults.position_sync);
-  setGateState('g-cd', gateResults.cooldown);
-}
-
-async function loadTrades() {
-  try {
-    const response = await fetch('/api/v3/trades?limit=20', { cache: 'no-store' });
-    if (!response.ok) return;
-    trades = await response.json();
-    rtl();
-  } catch (ex) {
-    console.error(ex);
-  }
-}
-
-async function rs() {
-  try {
-    const response = await fetch('/api/v3/status', { cache: 'no-store' });
-    if (!response.ok) return;
-
-    const s = await response.json();
-    if (!s.market_data) return;
-
-    $('cnt').textContent = 'Ticks: ' + (s.market_data.tick_count || 0) + ' | Signals: ' + (s.strategy?.signal_count || 0);
-    $('tt').textContent = s.execution?.fills_total ?? s.analytics?.total_trades ?? 0;
-    $('dd').textContent = pct(s.analytics?.max_drawdown_pct);
-    $('ap').textContent = s.risk_guard?.stats?.total_approved ?? 0;
-    $('rj').textContent = s.risk_guard?.stats?.total_rejected ?? s.execution?.orders_rejected ?? 0;
-
-    if (s.market_data.latest_price !== null && s.market_data.latest_price !== undefined) {
-      $('px').textContent = fmt(s.market_data.latest_price);
-    }
-
-    const roundTrips = s.analytics?.round_trips || 0;
-    const winRate = Number(s.analytics?.win_rate ?? 0);
-    if (roundTrips > 0) {
-      $('wr').textContent = (winRate * 100).toFixed(1) + '%';
-      $('wr').className = 'cv ' + (winRate >= 0.5 ? 'g' : winRate > 0 ? 'y' : 'r');
-    } else {
-      $('wr').textContent = '--';
-      $('wr').className = 'cv b';
-    }
-    $('rts').textContent = 'W: ' + (s.analytics?.wins || 0) + ' | L: ' + (s.analytics?.losses || 0) + ' | Trips: ' + roundTrips;
-
-    if (s.risk_guard) {
-      updateRiskGuard(s.risk_guard);
-    }
-  } catch (ex) {
-    console.error(ex);
-  }
-}
-
-ws.onopen = () => setBadge(true);
-ws.onclose = () => setBadge(false);
-ws.onmessage = (e) => {
-  try {
-    const d = JSON.parse(e.data);
-    switch (d.type) {
-      case 'PNL_SNAPSHOT':
-        updateSnapshot(d);
-        alog('lf', 'SNAPSHOT eq=' + d.equity + ' pos=' + d.position, d.timestamp);
-        break;
-      case 'TICK':
-        $('px').textContent = fmt(d.price);
-        alog('lk', 'TICK ' + d.symbol + ' @ ' + d.price, d.timestamp);
-        break;
-      case 'FILL':
-        trades.unshift(d);
-        if (trades.length > 20) {
-          trades.pop();
-        }
-        rtl();
-        alog('lf', 'FILL ' + d.side + ' ' + d.symbol + ' x' + d.quantity + ' @ ' + d.price, d.timestamp);
-        rs();
-        break;
-      case 'SIGNAL':
-        alog(
-          'ls',
-          'SIGNAL ' + d.side + ' ' + d.symbol + ' @ ' + d.price + ' str=' + Number(d.strength ?? 0).toFixed(2) +
-            (d.metadata && d.metadata.trigger_type ? ' [' + d.metadata.trigger_type + ']' : ''),
-          d.timestamp
-        );
-        break;
-      case 'RISK_REJECTED':
-        alog('lr', 'REJECTED ' + d.reason, d.timestamp);
-        rs();
-        break;
-      case 'HEARTBEAT':
-        rs();
-        break;
-      default:
-        break;
-    }
-  } catch (ex) {
-    console.error(ex);
-  }
+ws.onopen = () => {
+    $('wsDot').className = 'ws-dot ws-on';
+    $('statusBadge').textContent = 'LIVE';
+    $('statusBadge').className = 'badge badge-live';
+};
+ws.onclose = () => {
+    $('wsDot').className = 'ws-dot ws-off';
+    $('statusBadge').textContent = 'DISCONNECTED';
+    $('statusBadge').className = 'badge badge-off';
 };
 
-loadTrades();
-rs();
-setInterval(rs, 3000);
-</script></body></html>
+ws.onmessage = evt => {
+    try {
+        const d = JSON.parse(evt.data);
+        if (d.type === 'PNL_SNAPSHOT') {
+            $('equity').textContent = fmt(d.equity);
+            $('equity').className = 'card-value ' + (d.equity >= INIT_EQ ? 'green' : 'red');
+            $('unPnl').textContent = fmt(d.unrealized_pnl);
+            $('unPnl').className = 'card-value ' + (d.unrealized_pnl >= 0 ? 'green' : 'red');
+            $('rePnl').textContent = 'Realized: ' + fmt(d.realized_pnl);
+            const ret = ((d.equity - INIT_EQ) / INIT_EQ * 100).toFixed(2);
+            $('retPct').textContent = 'Return: ' + (ret >= 0 ? '+' : '') + ret + '%';
+            $('pos').textContent = d.position;
+            $('pos').className = 'card-value ' + (d.position > 0 ? 'green' : d.position < 0 ? 'red' : 'yellow');
+            $('avgE').textContent = 'Avg Entry: ' + fmt(d.avg_entry);
+        }
+        if (d.type === 'FILL') {
+            trades.unshift(d);
+            if (trades.length > 20) trades.pop();
+            renderTrades();
+            addLog('fill', 'FILL ' + d.side + ' ' + d.symbol + ' x' + d.quantity + ' @ ' + d.price + (d.metadata?.trigger ? ' ['+d.metadata.trigger+']' : ''));
+        }
+        if (d.type === 'SIGNAL') {
+            addLog('signal', 'SIGNAL ' + d.side + ' ' + d.symbol + ' @ ' + d.price + ' score=' + (d.score||0).toFixed(1) + ' regime=' + (d.regime||'?'));
+        }
+        if (d.type === 'HEARTBEAT') refreshStatus();
+    } catch(e) { console.error(e); }
+};
+
+function renderTrades() {
+    $('tradeLog').innerHTML = trades.map(t =>
+        '<tr><td>'+ts(t.timestamp)+'</td><td class="side-'+t.side.toLowerCase()+'">'+t.side+'</td><td>'+t.quantity+'</td><td>'+fmt(t.price)+'</td><td>'+fmt(t.commission)+'</td></tr>'
+    ).join('');
+}
+
+function addLog(cls, msg) {
+    const el = $('eventLog');
+    const div = document.createElement('div');
+    div.className = 'log-entry';
+    div.innerHTML = '<span class="log-time">'+ts(Date.now()/1000)+'</span> <span class="log-'+cls+'">'+msg+'</span>';
+    el.prepend(div);
+    while (el.children.length > MAX_LOG) el.removeChild(el.lastChild);
+}
+
+async function refreshStatus() {
+    try {
+        const r = await fetch('/api/v3/status');
+        const s = await r.json();
+
+        // Market data
+        if (s.market_data) {
+            $('price').textContent = fmt(s.market_data.latest_price || 0);
+            $('counts').textContent = 'Ticks: ' + s.market_data.tick_count;
+        }
+
+        // Strategy
+        if (s.strategy) {
+            $('counts').textContent += ' | Signals: ' + s.strategy.signal_count;
+            $('suppressed').textContent = s.strategy.signals_suppressed || 0;
+            const stressBlocked = s.strategy.signals_stress_blocked || 0;
+            $('stressBlocks').textContent = 'Stress-blocked: ' + stressBlocked;
+            const stressPct = parseFloat(s.strategy.stress_pct) || 0;
+            $('stressLevel').textContent = stressPct.toFixed(1) + '%';
+            $('stressVal').textContent = stressPct.toFixed(1) + '%';
+            $('stressLevel').className = 'card-value ' + (stressPct > 80 ? 'red' : stressPct > 50 ? 'yellow' : 'green');
+            const avgScores = s.strategy.avg_recent_scores || {};
+            const scores = Object.values(avgScores);
+            $('avgScore').textContent = 'Avg Score: ' + (scores.length ? (scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : '0');
+        }
+
+        // Regime
+        if (s.regime) {
+            const regimes = s.regime.current_regimes || {};
+            const reg = Object.values(regimes)[0] || 'RANGE';
+            $('regimeVal').textContent = reg;
+            $('regimeTrans').textContent = 'Transitions: ' + (s.regime.regime_changes || 0);
+            $('regimeBadge').textContent = reg;
+            $('regimeBadge').className = 'badge-regime regime-' + reg.toLowerCase();
+        }
+
+        // FSM
+        if (s.position_fsm) {
+            const positions = s.position_fsm.positions || {};
+            const sym = Object.keys(positions)[0];
+            if (sym) {
+                const p = positions[sym];
+                $('fsmState').innerHTML = '<span class="fsm-state">' + p.state + '</span>';
+            } else {
+                $('fsmState').innerHTML = '<span class="fsm-state">FLAT</span>';
+            }
+            $('fsmCycles').textContent = 'Cycles: ' + (s.position_fsm.total_cycles || 0);
+        }
+
+        // Execution
+        if (s.execution) {
+            $('sltpExits').textContent = (s.execution.sl_exits||0) + ' / ' + (s.execution.tp_exits||0);
+            $('winRate').textContent = 'Win Rate: ' + (s.execution.win_rate||0) + '%';
+        }
+
+        // Risk
+        if (s.risk) {
+            const r = s.risk;
+            $('cbStatus').textContent = r.circuit_breaker ? 'ACTIVE' : 'OK';
+            $('cbStatus').className = 'card-value ' + (r.circuit_breaker ? 'yellow cb-active' : 'green');
+            $('cbLosses').textContent = 'Consec. losses: ' + (r.consecutive_losses || 0);
+            $('killStatus').textContent = r.kill_switch ? 'ACTIVE' : 'OFF';
+            $('killStatus').className = 'card-value ' + (r.kill_switch ? 'red kill-active' : 'green');
+            $('ddPct').textContent = 'Drawdown: ' + ((r.current_drawdown_pct||0)*100).toFixed(2) + '%';
+        }
+
+        // Analytics
+        if (s.analytics) {
+            $('maxDD') && ($('maxDD').textContent = (s.analytics.max_drawdown_pct||0).toFixed(2) + '%');
+        }
+
+    } catch(e) {}
+}
+
+refreshStatus();
+setInterval(refreshStatus, 3000);
+</script>
+</body>
+</html>
 """)
-
-
-

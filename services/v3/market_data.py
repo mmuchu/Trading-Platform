@@ -1,8 +1,8 @@
-"""V3 Market Data Service — produces synthetic or live TickEvents.
-
-v3.2: Added live Binance REST polling with exponential backoff on failures.
-The feed automatically recovers from DNS errors and connection timeouts without
-spamming logs.  When the feed is dead, Gate 1 (FeedMonitor) blocks all trades.
+"""
+v3 Market Data Service
+======================
+Wraps the existing BinanceFeed (or sim mode) and emits TickEvents
+onto the event bus.  Bridges v1 BinanceFeed → v3 EventBus.
 """
 
 from __future__ import annotations
@@ -14,211 +14,104 @@ import time
 from collections import deque
 from typing import Optional
 
-import aiohttp
-
-from config.settings import settings
 from core.v3.event_bus import EventBus
-from core.v3.models import TickEvent
+from core.v3.models import EventType, TickEvent
 
 logger = logging.getLogger(__name__)
 
-# Default simulated parameters
-_DEFAULT_SYMBOL = "BTCUSDT"
-_BASE_PRICE = 65_000.0
-_MEAN_REVERSION = 0.01
-_VOLATILITY = 50.0
-_HALF_SPREAD = 2.5
-_TICK_INTERVAL = 0.5
-
-# Live mode parameters
-_LIVE_POLL_INTERVAL = 3.0
-_BACKOFF_INITIAL = 5.0
-_BACKOFF_MAX = 120.0
-_BACKOFF_MULTIPLIER = 2.0
-_LOG_SUPPRESS_INTERVAL = 30.0
-
 
 class V3MarketDataService:
-    """Async market-data feed backed by either a random-walk simulator or
-    a live Binance REST polling connection.
+    """
+    Market data provider that emits normalized TickEvents.
 
-    Live mode uses exponential backoff on failures to avoid log spam and
-    allow automatic recovery from DNS errors / timeouts.
-
-    Parameters
-    ----------
-    bus:
-        The shared v3 :class:`EventBus`.
-    mode:
-        ``"sim"`` for synthetic ticks, ``"live"`` for a real feed.
+    Modes:
+      live  — wraps existing BinanceFeed (reads from shared state)
+      sim   — generates synthetic random-walk ticks
     """
 
-    def __init__(self, bus: EventBus, mode: str = "sim") -> None:
+    def __init__(self, bus: EventBus, mode: str = "sim", binance_feed=None) -> None:
         self.bus = bus
         self.mode = mode
+        self._binance_feed = binance_feed  # existing BinanceFeed instance
 
-        self.tick_buffer: deque[TickEvent] = deque(maxlen=10_000)
-        self.latest_tick: Optional[TickEvent] = None
-        self._tick_count: int = 0
+        self._tick_buffer: deque[TickEvent] = deque(maxlen=10_000)
+        self._latest: Optional[TickEvent] = None
+        self._sim_price: float = 65_000.0
+        self._running = False
+        self._tick_count = 0
 
-        self._price: float = _BASE_PRICE
-        self._task: Optional[asyncio.Task] = None
-        self._running: bool = False
-
-        self._backoff_current: float = _BACKOFF_INITIAL
-        self._consecutive_errors: int = 0
-        self._last_error_log: float = 0.0
-        self._feed_dead: bool = False
-        self._session: Optional[aiohttp.ClientSession] = None
+    @property
+    def latest_tick(self) -> Optional[TickEvent]:
+        return self._latest
 
     @property
     def tick_count(self) -> int:
         return self._tick_count
 
-    @property
-    def feed_alive(self) -> bool:
-        if self.mode == "sim":
-            return True
-        return not self._feed_dead
-
     def recent_ticks(self, n: int = 100) -> list[TickEvent]:
-        return list(self.tick_buffer)[-n:]
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+        return list(self._tick_buffer)[-n:]
 
     async def start(self) -> None:
-        if self._running:
-            logger.warning("V3MarketDataService already running")
-            return
-
         self._running = True
-
-        if self.mode == "sim":
-            logger.info("Starting V3MarketDataService in SIM mode (symbol=%s)", _DEFAULT_SYMBOL)
-            self._task = asyncio.create_task(self._sim_loop(), name="market_data_sim")
+        logger.info("V3 MarketData starting (mode=%s)", self.mode)
+        if self.mode == "live" and self._binance_feed:
+            await self._live_loop()
         else:
-            logger.info(
-                "Starting V3MarketDataService in LIVE mode (symbol=%s, poll=%.1fs)",
-                settings.binance.symbol.upper(),
-                _LIVE_POLL_INTERVAL,
-            )
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=10),
-            )
-            self._task = asyncio.create_task(self._live_loop(), name="market_data_live")
+            await self._sim_loop()
 
     async def stop(self) -> None:
         self._running = False
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._session:
-            await self._session.close()
-            self._session = None
-        logger.info("V3MarketDataService stopped")
-
-    # ------------------------------------------------------------------
-    # Simulation loop
-    # ------------------------------------------------------------------
+        logger.info("V3 MarketData stopped after %d ticks", self._tick_count)
 
     async def _sim_loop(self) -> None:
+        # Sim with occasional momentum bursts to test regime classification
+        # Base drift: ~0.005% per tick (realistic BTC noise)
+        # Occasional bursts: ~0.05% per tick (simulates momentum events)
+        burst_counter = 0
+        burst_direction = 1
         while self._running:
-            tick = self._next_sim_tick()
-            self.tick_buffer.append(tick)
-            self.latest_tick = tick
-            self._tick_count += 1
-            await self.bus.publish(tick)
-            await asyncio.sleep(_TICK_INTERVAL)
+            burst_counter += 1
+            # Every 40-80 ticks, switch to a momentum burst direction
+            if burst_counter > random.randint(40, 80):
+                burst_counter = 0
+                burst_direction = random.choice([-1, 1])
 
-    def _next_sim_tick(self) -> TickEvent:
-        drift = _MEAN_REVERSION * (_BASE_PRICE - self._price)
-        noise = random.gauss(0, _VOLATILITY)
-        self._price += drift + noise
-        self._price = max(self._price, _BASE_PRICE * 0.5)
-        self._price = min(self._price, _BASE_PRICE * 1.5)
+            # Base noise + occasional momentum burst
+            base_drift = random.gauss(0, 5.0)  # ~0.008% noise
+            burst_drift = burst_direction * random.uniform(5, 18) if burst_counter < 25 else 0  # momentum burst (0.3-1% cumulative)
+            revert = 0.0003 * (65_000.0 - self._sim_price)  # gentle mean reversion
+            self._sim_price = max(100.0, self._sim_price + base_drift + burst_drift + revert)
 
-        mid = self._price
-        bid = round(mid - _HALF_SPREAD, 2)
-        ask = round(mid + _HALF_SPREAD, 2)
-        return TickEvent(
-            symbol=_DEFAULT_SYMBOL,
-            price=mid,
-            volume=random.randint(1, 500),
-            bid=bid,
-            ask=ask,
-        )
-
-    # ------------------------------------------------------------------
-    # Live loop with exponential backoff
-    # ------------------------------------------------------------------
+            spread = random.uniform(0.5, 2.0)
+            tick = TickEvent(
+                symbol="BTCUSDT",
+                price=round(self._sim_price, 2),
+                volume=random.randint(10, 500) + (200 if burst_counter < 20 else 0),
+                bid=round(self._sim_price - spread / 2, 2),
+                ask=round(self._sim_price + spread / 2, 2),
+                exchange="SIM",
+            )
+            await self._emit(tick)
+            await asyncio.sleep(random.uniform(0.05, 0.15))
 
     async def _live_loop(self) -> None:
+        """
+        Poll the existing BinanceFeed for price updates.
+        The v1 BinanceFeed runs in its own thread — we poll it async.
+        """
         while self._running:
-            success = await self._fetch_live_price()
-            if success:
-                if self._feed_dead:
-                    logger.info(
-                        "Feed RECOVERED after %d consecutive errors — resuming normal polling",
-                        self._consecutive_errors,
-                    )
-                self._consecutive_errors = 0
-                self._backoff_current = _BACKOFF_INITIAL
-                self._feed_dead = False
-                await asyncio.sleep(_LIVE_POLL_INTERVAL)
-            else:
-                self._consecutive_errors += 1
-                self._feed_dead = True
-
-                now = time.time()
-                if now - self._last_error_log >= _LOG_SUPPRESS_INTERVAL:
-                    logger.error(
-                        "Feed DEAD (error #%d) — backing off %.1fs. "
-                        "Gate 1 will block all trades until recovery.",
-                        self._consecutive_errors,
-                        self._backoff_current,
-                    )
-                    self._last_error_log = now
-
-                await asyncio.sleep(self._backoff_current)
-
-                self._backoff_current = min(
-                    self._backoff_current * _BACKOFF_MULTIPLIER,
-                    _BACKOFF_MAX,
+            price = self._binance_feed.get_price()
+            if price is not None:
+                tick = TickEvent(
+                    symbol=self._binance_feed.symbol,
+                    price=price,
+                    exchange="LIVE",
                 )
+                await self._emit(tick)
+            await asyncio.sleep(0.5)
 
-    async def _fetch_live_price(self) -> bool:
-        symbol = settings.binance.symbol.upper()
-        url = f"{settings.binance.rest_base}/ticker/price"
-        params = {"symbol": symbol}
-
-        try:
-            async with self._session.get(url, params=params) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    price = float(data["price"])
-                    tick = TickEvent(
-                        symbol=symbol,
-                        price=price,
-                        volume=0,
-                        bid=round(price - _HALF_SPREAD, 2),
-                        ask=round(price + _HALF_SPREAD, 2),
-                    )
-                    self.tick_buffer.append(tick)
-                    self.latest_tick = tick
-                    self._tick_count += 1
-                    await self.bus.publish(tick)
-                    return True
-                else:
-                    logger.warning(
-                        "Binance API returned status %d for %s",
-                        resp.status, symbol,
-                    )
-                    return False
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-            return False
+    async def _emit(self, tick: TickEvent) -> None:
+        self._tick_buffer.append(tick)
+        self._latest = tick
+        self._tick_count += 1
+        await self.bus.publish(tick)
