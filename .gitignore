@@ -13,3 +13,7 @@ fx*.py
 diag*.py
 fix_*.py
 deploy_*.py
+decode*.py
+*.zip
+block_*.txt
+trades*.sqlite
