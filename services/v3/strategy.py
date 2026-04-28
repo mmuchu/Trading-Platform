@@ -39,12 +39,14 @@ class SignalScoreConfig:
     regime_weight: float = 0.25           # weight of regime alignment score
     strength_weight: float = 0.15         # weight of signal strength
     trend_weight: float = 0.20            # weight of trend alignment score
-    min_score_to_emit: float = 60.0       # minimum composite score (0-100) to emit signal
+    min_score_to_emit: float = 45.0       # minimum composite score (0-100) to emit signal
     max_score: float = 100.0
-      strong_trade_score: float = 70.0
     cooldown_sec: float = 10.0            # minimum time between signals
     volatile_regime_penalty: float = -30  # score penalty in VOLATILE regime
     range_regime_penalty: float = -15     # score penalty in RANGE regime (for momentum)
+    strong_score_to_execute: float = 70.0
+    notrade_zone_max: float = 55.0
+    observe_zone_max: float = 65.0
 
 
 class BaseStrategy(ABC):
@@ -128,6 +130,12 @@ class V3StrategyService:
         self._last_signal_side: Dict[str, Optional[Side]] = {}
         self._consecutive_same_side: Dict[str, int] = {}
         self._recent_scores: Dict[str, deque] = {}  # recent signal scores for quality tracking
+        self._tick_counter: Dict[str, int] = {}
+        self._last_signal_tick: Dict[str, int] = {}
+        self._trade_results: Dict[str, list] = {}
+        self._avg_win: float = 0.0
+        self._avg_loss: float = 0.0
+        self._expectancy: float = 0.0
 
         # Equity stress tracking (addresses failure: no tightening under drawdown)
         self._initial_equity: float = 0.0
@@ -137,11 +145,20 @@ class V3StrategyService:
 
         # Execution reference for equity data
         self._execution = None
-        self._last_signal_tick: Dict[str,int] = {}
 
         # Only Momentum in v3.2
         momentum = MomentumV3()
         self._strategies[momentum.name] = momentum
+
+    def _zone_gate(self, score: float, symbol: str) -> str:
+        """Three-zone gate: NO_TRADE / OBSERVE / TRADE."""
+        if score < self.score_cfg.notrade_zone_max:
+            logger.info("NO_TRADE %s: score %.1f < %.1f", symbol, score, self.score_cfg.notrade_zone_max)
+            return "NO_TRADE"
+        if score < self.score_cfg.observe_zone_max:
+            logger.info("OBSERVE %s: score %.1f in observe zone [%.1f-%.1f]", symbol, score, self.score_cfg.notrade_zone_max, self.score_cfg.observe_zone_max)
+            return "OBSERVE"
+        return "TRADE"
 
     def set_execution(self, execution_service) -> None:
         """Set execution reference for equity stress tracking."""
@@ -169,10 +186,12 @@ class V3StrategyService:
             self._consecutive_same_side[tick.symbol] = 0
         self._history[tick.symbol].append(tick)
 
-        # Cooldown check
-        now = time.time()
-        if now - self._last_signal.get(tick.symbol, 0) < self.score_cfg.cooldown_sec:
+        # Tick-based cooldown (calibration)
+        self._tick_counter[tick.symbol] = self._tick_counter.get(tick.symbol, 0) + 1
+        last_tick = self._last_signal_tick.get(tick.symbol, -999)
+        if self._tick_counter[tick.symbol] - last_tick < 10:
             return
+        self._last_signal_tick[tick.symbol] = self._tick_counter[tick.symbol]
 
         # Update equity stress level
         self._update_stress_level()
@@ -233,7 +252,6 @@ class V3StrategyService:
                 # Emit
                 self._signal_count += 1
                 self._last_signal[tick.symbol] = now
-                  self._last_signal_tick[tick.symbol] = self._tick_count
                 self._recent_scores[tick.symbol].append(score)
 
                 # Update state memory
@@ -317,16 +335,28 @@ class V3StrategyService:
         """
         Filter signals based on regime. Returns (pass, reason).
         """
+        # Three-zone calibration gate
+        zone = self._zone_gate(score, signal.symbol)
+        if zone == "NO_TRADE":
+            return False, "NO_TRADE zone"
+        if zone == "OBSERVE":
+            return False, "OBSERVE zone - signal suppressed"
+
+        # Strong score execution gate
+        if score < self.score_cfg.strong_score_to_execute:
+            logger.info("SCORE BLOCK %s: score %.1f < strong %.1f", signal.symbol, score, self.score_cfg.strong_score_to_execute)
+            return False, f"score {score} below strong threshold"
+
         # VOLATILE: only allow very high-confidence signals
-        if regime == RegimeType.VOLATILE and score < self.score_cfg.strong_trade_score:
+        if regime == RegimeType.VOLATILE and score < 40:
             return False, f"VOLATILE regime requires score >= 75 (got {score})"
 
         # RANGE: momentum signals need higher threshold
-        if regime == RegimeType.RANGE and score < self.score_cfg.strong_trade_score:
+        if regime == RegimeType.RANGE and score < self.score_cfg.min_score_to_emit + 0:
             return False, f"RANGE regime requires score >= {self.score_cfg.min_score_to_emit + 0} (got {score})"
 
         # Below minimum score threshold
-        if score < self.score_cfg.55.0:
+        if score < self.score_cfg.min_score_to_emit - 20:
             return False, f"Score {score} below minimum {self.score_cfg.min_score_to_emit}"
 
         # Anti-churn: consecutive same-side signals with declining scores
@@ -408,6 +438,24 @@ class V3StrategyService:
         elif pnl < 0:
             self._consecutive_losses += 1
 
+        # Expectancy validation tracking
+        sym = "default"
+        if sym not in self._trade_results:
+            self._trade_results[sym] = []
+        self._trade_results[sym].append({"pnl": pnl, "win": pnl > 0})
+        if len(self._trade_results[sym]) >= 50:
+            recent = self._trade_results[sym][-50:]
+            wins = [t["pnl"] for t in recent if t["win"]]
+            losses = [-t["pnl"] for t in recent if not t["win"]]
+            if wins and losses:
+                self._avg_win = sum(wins) / len(wins)
+                self._avg_loss = sum(losses) / len(losses)
+                self._expectancy = (len(wins) / 50) * self._avg_win - (len(losses) / 50) * self._avg_loss
+                if self._expectancy > 0:
+                    logger.info("EXPECTANCY VALIDATED %s: avg_win=%.2f avg_loss=%.2f expectancy=%.2f (n=%d)", sym, self._avg_win, self._avg_loss, self._expectancy, len(self._trade_results[sym]))
+                else:
+                    logger.info("EXPECTANCY NOT VALIDATED %s: avg_win=%.2f avg_loss=%.2f expectancy=%.2f (n=%d)", sym, self._avg_win, self._avg_loss, self._expectancy, len(self._trade_results[sym]))
+
     def _apply_stress_adjustment(self, score: float) -> float:
         """
         Adjust signal score based on equity stress level.
@@ -442,4 +490,7 @@ class V3StrategyService:
                 s: round(sum(v) / len(v), 1) if v else 0
                 for s, v in self._recent_scores.items()
             } if hasattr(self, '_recent_scores') else {},
+            "expectancy": round(getattr(self, '_expectancy', 0), 4),
+            "avg_win": round(getattr(self, '_avg_win', 0), 4),
+            "avg_loss": round(getattr(self, '_avg_loss', 0), 4),
         }

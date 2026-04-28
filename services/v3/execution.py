@@ -87,6 +87,10 @@ class V3ExecutionService:
         # Recent trade results for risk checker
         self._recent_pnls: list[float] = []  # last N trade PnLs
 
+        # ATR tracking for position sizing
+        self._atr_values: Dict[str, list] = {}
+        self._atr_history: Dict[str, list] = {}
+
     @property
     def cash(self) -> float:
         return self._cash
@@ -174,6 +178,20 @@ class V3ExecutionService:
 
         return None
 
+    def update_atr(self, symbol: str, atr: float):
+        """Track ATR values for position sizing."""
+        if symbol not in self._atr_values:
+            self._atr_values[symbol] = []
+        self._atr_values[symbol].append(atr)
+        if len(self._atr_values[symbol]) > 14:
+            self._atr_values[symbol] = self._atr_values[symbol][-14:]
+        self._atr_history[symbol] = list(self._atr_values[symbol])
+
+    def _get_avg_atr(self, symbol: str) -> float:
+        """Get average ATR over tracked period."""
+        vals = self._atr_values.get(symbol, [])
+        return sum(vals) / len(vals) if vals else 0.0
+
     def compute_position_size(
         self,
         signal: SignalEvent,
@@ -186,7 +204,19 @@ class V3ExecutionService:
         Capped by: max_position_size, available_cash
         """
         equity = self.equity
-        risk_budget = equity * settings.risk.risk_per_trade_pct  # e.g., $100 on $10K at 1%
+        # Risk budget with ATR-based scaling and clamping
+        risk_pct = getattr(settings.risk, 'risk_per_trade_pct_max', 0.01)
+        avg_atr = self._get_avg_atr(signal.symbol)
+        if atr_pct > 0 and avg_atr > 0:
+            atr_ratio = atr_pct / avg_atr
+            if atr_ratio > 3.0:
+                risk_pct = risk_pct * 0.5
+            elif atr_ratio < 1.0:
+                risk_pct = risk_pct * 0.75
+        risk_min = getattr(settings.risk, 'risk_per_trade_pct_min', 0.005)
+        risk_max = getattr(settings.risk, 'risk_per_trade_pct_max', 0.01)
+        risk_pct = max(risk_min, min(risk_max, risk_pct))
+        risk_budget = equity * risk_pct
 
         # Stop distance: use ATR if available, else use SL percentage
         if atr_pct > 0:
@@ -238,8 +268,7 @@ class V3ExecutionService:
                     return
 
             # Accept signal → transition to ENTERING
-            atr = signal.metadata.get('atr_pct',0.0)
-            qty = self.compute_position_size(signal, atr_pct=atr)
+            qty = self.compute_position_size(signal)
             if self.fsm and sym in self.fsm._positions and self.get_position(sym).quantity==0:
               self.fsm._positions.pop(sym)
 
@@ -352,8 +381,7 @@ class V3ExecutionService:
             return RiskRejectedEvent(reason=f"Max short position -{self._max_position}")
 
         # Cash check
-        atr2 = signal.metadata.get('atr_pct',0.0)
-          estimated_cost = signal.price * self.compute_position_size(signal, atr_pct=atr2) * (1 + self._commission_pct + self._slippage_pct)
+        estimated_cost = signal.price * self.compute_position_size(signal) * (1 + self._commission_pct + self._slippage_pct)
         if signal.side == Side.BUY and self._cash < estimated_cost:
             return RiskRejectedEvent(reason=f"Insufficient cash (have ${self._cash:.2f}, need ${estimated_cost:.2f})")
 
@@ -375,8 +403,7 @@ class V3ExecutionService:
         else:
             fill_price = signal.price * (1 - slip)
 
-        atr = signal.metadata.get('atr_pct',0.0)
-            qty = self.compute_position_size(signal, atr_pct=atr)
+        qty = self.compute_position_size(signal)
         commission = fill_price * qty * self._commission_pct
 
         return FillEvent(

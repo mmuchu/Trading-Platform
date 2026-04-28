@@ -25,7 +25,9 @@ class RiskConfig:
     # Drawdown & equity
     max_drawdown_pct: float = 0.05           # 5% max drawdown
     equity_floor_pct: float = 0.50           # 50% of initial = kill zone
-    risk_per_trade_pct: float = 0.01         # 1% of equity per trade
+    risk_per_trade_pct: float = 0.01         # 1% of equity per trade (legacy)
+    risk_per_trade_pct_min: float = 0.005    # 0.5% min risk per trade
+    risk_per_trade_pct_max: float = 0.01     # 1% max risk per trade
 
     # Position limits
     max_position_size: float = 0.1           # 0.1 BTC max position
@@ -34,7 +36,7 @@ class RiskConfig:
 
     # SL/TP
     stop_loss_pct: float = 0.001             # 1.5% stop loss
-    take_profit_pct: float = 0.002            # 0.2% take profit
+    take_profit_pct: float = 0.002            # 3% take profit
 
     # Circuit breaker
     circuit_breaker_losses: int = 3          # consecutive losses to trigger
@@ -53,10 +55,16 @@ class StrategyConfig:
     momentum_lookback: int = 20
     momentum_threshold_pct: float = 0.3      # 0.3% minimum move to signal
     momentum_min_strength: float = 0.25     # minimum signal strength
-    signal_cooldown_sec: float = 30.0
-      tick_cooldown: int = 10        # cooldown between signals
+    signal_cooldown_sec: float = 10.0        # cooldown between signals (legacy)
+    signal_cooldown_ticks: int = 10          # tick-based cooldown
     breakout_window: int = 20
     breakout_threshold_pct: float = 0.02
+    # Strategy calibration thresholds
+    min_trade_score: float = 60.0
+    strong_trade_score: float = 70.0
+    notrade_zone_max: float = 55.0
+    observe_zone_max: float = 65.0
+    strong_score_to_execute: bool = True
 
 
 @dataclass
@@ -78,7 +86,6 @@ class SignalScoreConfig:
     strength_weight: float = 0.15
     trend_weight: float = 0.20
     min_score_to_emit: float = 60.0
-      strong_trade_score: float = 70.0
     volatile_regime_penalty: float = -30
     range_regime_penalty: float = -15
 
