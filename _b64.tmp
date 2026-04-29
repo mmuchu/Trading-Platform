@@ -1,0 +1,29 @@
+"""
+v3.2.1 Strategy Calibration Patcher
+=====================================
+Applies all 5 calibration changes from the Patch Review doc:
+  1. Two-tier signal threshold (min=60, strong=70)
+  2. Three-zone no-trade model
+  3. Expectancy validation tracking
+  4. ATR-based position sizing with 0.5-1% risk cap
+  5. Tick-based signal cooldown (5-20 ticks per symbol)
+
+Run:  python apply_calibrations.py
+"""
+
+import os, re, shutil
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+
+def backup(fpath):
+    bk = fpath + ".bak_pre_calibration"
+    shutil.copy2(fpath, bk)
+    print(f"  BACKUP: {bk}")
+
+def read(fpath):
+    with open(fpath, 'r', encoding='utf-8') as f:
+        return f.read()
+
+def write(fpath, content):
+    with open(fpath, 'w', encoding='utf-8') as f:
+        f.write(content)

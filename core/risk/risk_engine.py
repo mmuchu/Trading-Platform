@@ -25,9 +25,10 @@ class RiskEngine:
             self._halt()
             self._record_block(f"Drawdown {self.state.current_drawdown_pct:.2%} exceeds {self.cfg.max_drawdown_pct:.2%}")
             return "BLOCK"
-        new_pos = position + (1 if signal == "BUY" else -1)
-        if abs(new_pos) > self.cfg.max_position_size:
-            self._record_block(f"Position limit: current={position}, limit={self.cfg.max_position_size}")
+        # Position count check (0=no position, 1=long, -1=short)
+        # execution.py handles BTC quantity sizing separately
+        if position != 0:
+            self._record_block(f"Position limit: already in position={position}")
             return "BLOCK"
         return signal
 
